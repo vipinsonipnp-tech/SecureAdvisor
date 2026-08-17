@@ -1,0 +1,1864 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>SecureAdvisor</title>
+<meta name="theme-color" content="#0B1730">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="SecureAdvisor">
+<link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='22' fill='%230B1730'/%3E%3Cpolygon points='50,18 75,27 75,50 50,80 25,50 25,27' fill='%237C5CFC'/%3E%3Cpolygon points='50,34 54,44 65,44 56,50 59,61 50,55 41,61 44,50 35,44 46,44' fill='white'/%3E%3C/svg%3E">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='22' fill='%230B1730'/%3E%3Cpolygon points='50,18 75,27 75,50 50,80 25,50 25,27' fill='%237C5CFC'/%3E%3Cpolygon points='50,34 54,44 65,44 56,50 59,61 50,55 41,61 44,50 35,44 46,44' fill='white'/%3E%3C/svg%3E">
+<link rel="manifest" href="manifest.json">
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Sora:wght@600;700;800&family=Inter:wght@400;500;600;700&display=swap');
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin:0; padding:0; background:#F5F7FA; font-family:'Inter',sans-serif; color:#1B2436; overscroll-behavior-y: contain; }
+  #root { min-height: 100vh; }
+  input, select, button { font-family: inherit; }
+  ::-webkit-scrollbar { display: none; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+<script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script crossorigin src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
+<script>
+  if (window['pdfjsLib']) {
+    pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+  }
+</script>
+
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useMemo } = React;
+
+const COLORS = {
+  navy: "#132242", navyDeep: "#0B1730", teal: "#7C5CFC", tealDeep: "#5B3FD1",
+  amber: "#E8A33D", coral: "#E2694B", bloodRed: "#8B0000", bg: "#F5F7FA", card: "#FFFFFF",
+  line: "#E4E8EF", ink: "#1B2436", sub: "#6B7688",
+};
+const LOB = [
+  { key: "health", label: "Health", emoji: "❤️", color: "#E2694B" },
+  { key: "motor", label: "Motor", emoji: "🚗", color: "#0EA394" },
+  { key: "life", label: "Life", emoji: "🛡️", color: "#3B5BA9" },
+  { key: "travel", label: "Travel", emoji: "✈️", color: "#E8A33D" },
+];
+const STATUS_OPTS = ["active", "expiring", "lapsed"];
+const STAGE_OPTS = ["Quote given", "Underwriting", "Rejected", "Issued"];
+const QUOTE_STATUS_OPTS = ["Not converted", "In process", "Converted"];
+const CLAIM_STAGES = ["Submitted", "Documents pending", "Under review", "Approved", "Rejected"];
+const CUSTOMER_TAGS = ["New", "Active", "VIP", "Renewal due"];
+const ROLE_OPTS = ["Agent", "BDM"];
+const KNOWN_INSURERS = ["Star Health","HDFC Life","ICICI Lombard","Bajaj Allianz","Tata AIG","Niva Bupa","Care Health",
+  "LIC","SBI Life","Max Life","Reliance General","New India Assurance","Oriental Insurance","United India Insurance",
+  "National Insurance","Aditya Birla","Kotak Life","PNB MetLife","Digit Insurance","Go Digit","Future Generali","IFFCO Tokio"];
+
+const currency = (n) => "₹" + Number(n || 0).toLocaleString("en-IN");
+const lobMeta = (key) => LOB.find(l => l.key === key) || LOB[0];
+// Policies saved before the stage field existed are treated as already Issued, so existing business isn't suddenly uncounted.
+const isIssued = (p) => p.stage ? p.stage === "Issued" : true;
+function stageTone(stage) {
+  switch (stage) {
+    case "Issued": return "teal";
+    case "Rejected": return "coral";
+    case "Underwriting": return "amber";
+    default: return "navy"; // Quote given
+  }
+}
+function quoteStatusTone(status) {
+  switch (status) {
+    case "Converted": return "teal";
+    case "In process": return "amber";
+    default: return "navy"; // Not converted
+  }
+}
+function policyFromQuote(q) {
+  return {
+    id: uid("PL"), customerId: q.customerId || null, name: q.name || "Unnamed customer", phone: q.phone, agentName: q.agentName,
+    lob: q.lob, insurer: q.insurer, policyNo: q.policyNo,
+    premium: Number(q.premium) || 0, sumInsured: Number(q.sumInsured) || 0,
+    start: q.start, end: q.end, status: "active", stage: "Underwriting",
+    quoteDoc: q.quoteDoc || null, underwritingDoc: q.underwritingDoc || null, issuedDoc: null, renewalNotice: null,
+  };
+}
+const uid = (prefix) => prefix + "-" + Math.random().toString(36).slice(2, 6).toUpperCase();
+
+const NAV = [
+  { key: "dashboard", label: "Dashboard", emoji: "📊" },
+  { key: "policies", label: "Policies", emoji: "📄" },
+  { key: "quotation", label: "Quotation", emoji: "✨" },
+  { key: "calculator", label: "Premium Calculator", emoji: "🧮" },
+  { key: "crm", label: "Customers", emoji: "👥" },
+  { key: "renewals", label: "Renewals", emoji: "🔔" },
+  { key: "tasks", label: "Tasks", emoji: "✅" },
+  { key: "claims", label: "Claims", emoji: "📁" },
+  { key: "reports", label: "Reports", emoji: "📈" },
+  { key: "agents", label: "Agents & BDMs", emoji: "🧑‍💼" },
+  { key: "settings", label: "Backup & Restore", emoji: "💾" },
+];
+const STORAGE_KEY = "agenex-advisors-data-v1";
+const EMPTY_DATA = { policies: [], customers: [], claims: [], agents: [], tasks: [], quotes: [] };
+
+// ---------- PDF helpers ----------
+function fileToDataURL(file) {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(r.result);
+    r.onerror = reject;
+    r.readAsDataURL(file);
+  });
+}
+function openAttachment(dataUrl) {
+  if (window.__openPdfViewer) {
+    window.__openPdfViewer(dataUrl);
+    return;
+  }
+  // Fallback for contexts where the in-app viewer hasn't mounted yet
+  try {
+    const [header, base64] = dataUrl.split(",");
+    const mimeMatch = header.match(/:(.*?);/);
+    const mime = mimeMatch ? mimeMatch[1] : "application/pdf";
+    const binary = atob(base64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    const blob = new Blob([bytes], { type: mime });
+    const blobUrl = URL.createObjectURL(blob);
+    window.open(blobUrl, "_blank");
+    setTimeout(() => URL.revokeObjectURL(blobUrl), 60000);
+  } catch (e) {
+    window.open(dataUrl, "_blank");
+  }
+}
+async function extractPdfText(file) {
+  const buf = await file.arrayBuffer();
+  const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
+  let text = "";
+  const maxPages = Math.min(pdf.numPages, 8);
+  for (let i = 1; i <= maxPages; i++) {
+    const page = await pdf.getPage(i);
+    const content = await page.getTextContent();
+    text += content.items.map(it => it.str).join(" ") + "\n";
+  }
+  return text;
+}
+function normalizeDate(d) {
+  const parts = d.split(/[\/\-.]/);
+  if (parts.length !== 3) return "";
+  let [a, b, c] = parts;
+  if (c.length === 2) c = (Number(c) > 50 ? "19" : "20") + c;
+  const dd = a.padStart(2, "0"), mm = b.padStart(2, "0");
+  if (Number(mm) > 12) return `${c}-${dd}-${mm}`;
+  return `${c}-${mm}-${dd}`;
+}
+function parsePolicyText(text) {
+  const norm = text.replace(/\s+/g, " ");
+  const result = {};
+  let m = norm.match(/(?:Insured'?s? Name|Policyholder Name|Name of (?:the )?Insured|Proposer Name|Customer Name|Client Name)\s*[:\-]?\s*([A-Za-z.\s]{3,40}?)(?=\s{2,}|,|\bPolicy\b|\bAddress\b|\bDOB\b|\bAge\b|\bGender\b|$)/i);
+  if (m) result.name = m[1].trim();
+  m = norm.match(/(?:\+?91[\s-]?)?[6-9]\d{9}\b/);
+  if (m) result.phone = m[0].trim();
+  m = norm.match(/(?:Total Premium|Premium Payable|Premium Amount|Premium)\s*[:\-]?\s*(?:Rs\.?|INR|₹)?\s*([\d,]+(?:\.\d+)?)/i);
+  if (m) result.premium = m[1].replace(/,/g, "");
+  m = norm.match(/Sum Insured\s*[:\-]?\s*(?:Rs\.?|INR|₹)?\s*([\d,]+(?:\.\d+)?)/i);
+  if (m) result.sumInsured = m[1].replace(/,/g, "");
+  m = norm.match(/Policy\s*(?:No\.?|Number)\s*[:\-]?\s*([A-Za-z0-9\/\-]{4,25})/i);
+  if (m) result.policyNo = m[1].trim();
+  for (const ins of KNOWN_INSURERS) { if (norm.toLowerCase().includes(ins.toLowerCase())) { result.insurer = ins; break; } }
+  const dateRe = /(\d{1,2}[\/\-.]\d{1,2}[\/\-.]\d{2,4})/g;
+  const dates = [...norm.matchAll(dateRe)].map(d => normalizeDate(d[1])).filter(Boolean);
+  if (dates.length >= 2) { result.start = dates[0]; result.end = dates[1]; }
+  else if (dates.length === 1) { result.end = dates[0]; }
+  const lower = norm.toLowerCase();
+  if (/health|mediclaim|hospitalisation|hospitalization/.test(lower)) result.lob = "health";
+  else if (/motor|vehicle insurance|two wheeler|car insurance/.test(lower)) result.lob = "motor";
+  else if (/life insurance|term plan|endowment|ulip/.test(lower)) result.lob = "life";
+  else if (/travel insurance|overseas travel|trip insurance/.test(lower)) result.lob = "travel";
+  return result;
+}
+
+function Pill({ children, tone = "teal" }) {
+  const tones = {
+    teal: { bg: "#E5F5F3", fg: COLORS.tealDeep }, amber: { bg: "#FBF0DD", fg: "#9C6B14" },
+    coral: { bg: "#FBE7E1", fg: "#B34328" }, navy: { bg: "#E9EDF6", fg: COLORS.navy },
+  };
+  const t = tones[tone];
+  return <span style={{ background: t.bg, color: t.fg, fontSize: 12, fontWeight: 600, padding: "3px 9px", borderRadius: 999, whiteSpace: "nowrap" }}>{children}</span>;
+}
+function LobBadge({ lobKey, size = 22 }) {
+  const meta = lobMeta(lobKey);
+  return (
+    <div style={{ width: size, height: size, borderRadius: 8, display: "flex", alignItems: "center", justifyContent: "center", background: meta.color + "1A", flexShrink: 0, fontSize: size * 0.55 }}>
+      {meta.emoji}
+    </div>
+  );
+}
+function Card({ children, style }) {
+  return <div style={{ background: COLORS.card, borderRadius: 14, border: `1px solid ${COLORS.line}`, boxShadow: "0 1px 2px rgba(19,34,66,0.04)", ...style }}>{children}</div>;
+}
+function StatCard({ label, value, sub, emoji, accent }) {
+  return (
+    <Card style={{ padding: "18px 20px", flex: 1, minWidth: 150 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+        <div style={{ fontSize: 12.5, color: COLORS.sub, fontWeight: 600, letterSpacing: 0.2 }}>{label}</div>
+        <div style={{ width: 30, height: 30, borderRadius: 8, background: accent + "1A", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15 }}>{emoji}</div>
+      </div>
+      <div style={{ fontFamily: "'Sora', sans-serif", fontSize: 22, fontWeight: 700, color: COLORS.ink, marginTop: 10 }}>{value}</div>
+      {sub && <div style={{ fontSize: 12.5, color: COLORS.sub, marginTop: 4 }}>{sub}</div>}
+    </Card>
+  );
+}
+function EmptyState({ emoji, title, sub, onAdd, addLabel }) {
+  return (
+    <Card style={{ padding: "40px 20px", textAlign: "center" }}>
+      <div style={{ fontSize: 30 }}>{emoji}</div>
+      <div style={{ fontFamily: "'Sora', sans-serif", fontWeight: 700, fontSize: 15, color: COLORS.ink, marginTop: 12 }}>{title}</div>
+      <div style={{ fontSize: 13, color: COLORS.sub, marginTop: 4 }}>{sub}</div>
+      {onAdd && <button onClick={onAdd} style={{ ...primaryBtn, margin: "16px auto 0" }}>+ {addLabel}</button>}
+    </Card>
+  );
+}
+function Bars({ items }) {
+  const max = Math.max(1, ...items.map(i => i.value));
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+      {items.map((it, i) => (
+        <div key={i}>
+          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: COLORS.sub, marginBottom: 4 }}>
+            <span>{it.name}</span><span style={{ fontWeight: 600, color: COLORS.ink }}>{currency(it.value)}</span>
+          </div>
+          <div style={{ background: COLORS.bg, borderRadius: 6, height: 10, overflow: "hidden" }}>
+            <div style={{ width: (it.value / max * 100) + "%", background: it.color || COLORS.teal, height: "100%", borderRadius: 6 }} />
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+function Donut({ items }) {
+  const total = items.reduce((s, i) => s + i.value, 0) || 1;
+  let acc = 0;
+  const stops = items.map(i => {
+    const start = acc / total * 360;
+    acc += i.value;
+    const end = acc / total * 360;
+    return `${i.color} ${start}deg ${end}deg`;
+  }).join(", ");
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 18, flexWrap: "wrap" }}>
+      <div style={{ width: 110, height: 110, borderRadius: "50%", background: `conic-gradient(${stops})`, position: "relative", flexShrink: 0 }}>
+        <div style={{ position: "absolute", inset: 16, background: "#fff", borderRadius: "50%" }} />
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+        {items.map((it, i) => (
+          <div key={i} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: COLORS.sub }}>
+            <span style={{ width: 8, height: 8, borderRadius: 4, background: it.color }} /> {it.name}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ---------- Generic form modal (with PDF-aware fields) ----------
+function FormModal({ title, fields, initial, onCancel, onSave, agentOptions = [], customers = [] }) {
+  const [values, setValues] = useState(() => {
+    const v = {};
+    fields.forEach(f => { v[f.key] = initial && initial[f.key] !== undefined ? initial[f.key] : (f.default !== undefined ? f.default : (f.type === "pdf" ? null : f.type === "pdf-multi" ? [] : "")); });
+    return v;
+  });
+  const [pdfBusy, setPdfBusy] = useState(false);
+  const [pdfNote, setPdfNote] = useState("");
+  const set = (k, val) => setValues(v => ({ ...v, [k]: val }));
+  const canSave = fields.filter(f => f.required).every(f => String(values[f.key] || "").trim() !== "");
+
+  const handlePdfChange = async (f, file) => {
+    if (!file) return;
+    setPdfBusy(true);
+    setPdfNote("");
+    try {
+      const dataUrl = await fileToDataURL(file);
+      set(f.key, { name: file.name, data: dataUrl });
+      if (f.autofill && window.pdfjsLib) {
+        const text = await extractPdfText(file);
+        const parsed = parsePolicyText(text);
+        const matched = fields.filter(ff => ff.key in parsed && ff.type !== "pdf").map(ff => ff.key);
+        setValues(v => {
+          const nv = { ...v };
+          matched.forEach(k => { if (!nv[k]) nv[k] = parsed[k]; });
+          return nv;
+        });
+        setPdfNote(matched.length ? `Auto-filled: ${matched.join(", ")}` : "Couldn't confidently read fields from this PDF — please fill them in manually.");
+      }
+    } catch (e) {
+      setPdfNote("Couldn't read that PDF. You can still attach it, or fill fields manually.");
+    }
+    setPdfBusy(false);
+  };
+
+  const handleMultiPdfChange = async (f, fileList) => {
+    const files = Array.from(fileList || []);
+    if (!files.length) return;
+    const max = f.max || 6;
+    const current = values[f.key] || [];
+    const room = Math.max(0, max - current.length);
+    const toAdd = files.slice(0, room);
+    setPdfBusy(true);
+    setPdfNote(files.length > room ? `Only added ${toAdd.length} — limit is ${max} files.` : "");
+    try {
+      const read = await Promise.all(toAdd.map(async (file) => ({ name: file.name, data: await fileToDataURL(file) })));
+      set(f.key, [...current, ...read]);
+    } catch (e) {
+      setPdfNote("Couldn't read one of those files.");
+    }
+    setPdfBusy(false);
+  };
+
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(11,23,48,0.5)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 60, padding: 16 }} onClick={onCancel}>
+      <div style={{ background: "#fff", borderRadius: 16, width: 420, maxWidth: "100%", maxHeight: "88vh", overflowY: "auto", padding: 22 }} onClick={e => e.stopPropagation()}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+          <div style={{ fontFamily: "'Sora', sans-serif", fontWeight: 700, fontSize: 16, color: COLORS.ink }}>{title}</div>
+          <span onClick={onCancel} style={{ cursor: "pointer", fontSize: 18, color: COLORS.sub }}>&times;</span>
+        </div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          {fields.map(f => f.type === "hidden" ? null : (
+            <div key={f.key}>
+              <div style={{ fontSize: 11.5, color: COLORS.sub, marginBottom: 4, fontWeight: 600 }}>{f.label}{f.required && " *"}</div>
+              {f.type === "customer" ? (
+                <select
+                  value={values.customerId || ""}
+                  onChange={e => {
+                    const cust = customers.find(c => c.id === e.target.value);
+                    setValues(v => ({ ...v, customerId: e.target.value, name: cust ? cust.name : "", phone: cust ? cust.phone : "" }));
+                  }}
+                  style={inputStyle}
+                >
+                  <option value="">Select customer…</option>
+                  {customers.map(c => <option key={c.id} value={c.id}>{c.name}{c.phone ? ` — ${c.phone}` : ""}</option>)}
+                </select>
+              ) : f.key === "agentName" && agentOptions.length > 0 ? (
+                <select value={values[f.key]} onChange={e => set(f.key, e.target.value)} style={inputStyle}>
+                  <option value="">Select advisor…</option>
+                  {agentOptions.map(o => <option key={o} value={o}>{o}</option>)}
+                </select>
+              ) : f.type === "select" ? (
+                <select value={values[f.key]} onChange={e => set(f.key, e.target.value)} style={inputStyle}>
+                  {f.options.map(o => <option key={o} value={o}>{o}</option>)}
+                </select>
+              ) : f.type === "pdf-multi" ? (
+                <div>
+                  <input
+                    type="file"
+                    accept="application/pdf"
+                    multiple
+                    disabled={(values[f.key] || []).length >= (f.max || 6)}
+                    onChange={e => handleMultiPdfChange(f, e.target.files)}
+                    style={inputStyle}
+                  />
+                  <div style={{ fontSize: 11.5, color: COLORS.sub, marginTop: 5 }}>{(values[f.key] || []).length} / {f.max || 6} attached</div>
+                  {pdfBusy && <div style={{ fontSize: 12, color: COLORS.sub, marginTop: 5 }}>Reading files…</div>}
+                  {!pdfBusy && pdfNote && <div style={{ fontSize: 12, color: COLORS.tealDeep, marginTop: 5 }}>{pdfNote}</div>}
+                  {(values[f.key] || []).length > 0 && (
+                    <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 8 }}>
+                      {values[f.key].map((att, idx) => (
+                        <div key={idx} style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 12.5 }}>
+                          <span>{"📎"}</span>
+                          <a href="#" onClick={e => { e.preventDefault(); openAttachment(att.data); }} style={{ color: COLORS.tealDeep, fontWeight: 600, flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{att.name}</a>
+                          <span onClick={() => set(f.key, values[f.key].filter((_, i) => i !== idx))} style={{ cursor: "pointer", color: COLORS.coral, fontWeight: 600 }}>Remove</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              ) : f.type === "pdf" ? (
+                <div>
+                  <input type="file" accept="application/pdf" onChange={e => handlePdfChange(f, e.target.files[0])} style={inputStyle} />
+                  {pdfBusy && <div style={{ fontSize: 12, color: COLORS.sub, marginTop: 5 }}>Reading PDF…</div>}
+                  {!pdfBusy && pdfNote && <div style={{ fontSize: 12, color: COLORS.tealDeep, marginTop: 5 }}>{pdfNote}</div>}
+                  {values[f.key] && (
+                    <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 6, fontSize: 12.5 }}>
+                      <span>{"📎"}</span>
+                      <a href="#" onClick={e => { e.preventDefault(); openAttachment(values[f.key].data); }} style={{ color: COLORS.tealDeep, fontWeight: 600, flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{values[f.key].name}</a>
+                      <span onClick={() => set(f.key, null)} style={{ cursor: "pointer", color: COLORS.coral, fontWeight: 600 }}>Remove</span>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <input
+                  type={f.type || "text"}
+                  value={values[f.key]}
+                  placeholder={f.placeholder || ""}
+                  onChange={e => set(f.key, e.target.value)}
+                  style={inputStyle}
+                />
+              )}
+            </div>
+          ))}
+        </div>
+        <div style={{ display: "flex", gap: 10, marginTop: 20 }}>
+          <button onClick={onCancel} style={{ ...ghostBtn, flex: 1, justifyContent: "center" }}>Cancel</button>
+          <button
+            disabled={!canSave}
+            onClick={() => onSave(values)}
+            style={{ ...primaryBtn, flex: 1, justifyContent: "center", opacity: canSave ? 1 : 0.5, cursor: canSave ? "pointer" : "not-allowed" }}
+          >Save</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ConfirmModal({ text, onCancel, onConfirm, confirmLabel = "Delete", tone = "coral" }) {
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(11,23,48,0.5)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 70, padding: 16 }} onClick={onCancel}>
+      <div style={{ background: "#fff", borderRadius: 14, width: 320, maxWidth: "100%", padding: 20 }} onClick={e => e.stopPropagation()}>
+        <div style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
+          <span style={{ fontSize: 18 }}>{"⚠️"}</span>
+          <div style={{ fontSize: 13.5, color: COLORS.ink, lineHeight: 1.5 }}>{text}</div>
+        </div>
+        <div style={{ display: "flex", gap: 10, marginTop: 18 }}>
+          <button onClick={onCancel} style={{ ...ghostBtn, flex: 1, justifyContent: "center" }}>Cancel</button>
+          <button onClick={onConfirm} style={{ ...primaryBtn, flex: 1, justifyContent: "center", background: COLORS[tone] }}>{confirmLabel}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+function WhatsAppModal({ policy, onClose }) {
+  const [sent, setSent] = useState(false);
+  if (!policy) return null;
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(11,23,48,0.5)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 50, padding: 16 }} onClick={onClose}>
+      <div style={{ background: "#fff", borderRadius: 16, width: 380, maxWidth: "100%", padding: 22 }} onClick={e => e.stopPropagation()}>
+        {!sent ? (
+          <React.Fragment>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <div style={{ fontFamily: "'Sora', sans-serif", fontWeight: 700, fontSize: 16, color: COLORS.ink }}>Share quote on WhatsApp</div>
+              <span onClick={onClose} style={{ cursor: "pointer", fontSize: 18, color: COLORS.sub }}>&times;</span>
+            </div>
+            <div style={{ marginTop: 14, background: COLORS.bg, borderRadius: 10, padding: 14, fontSize: 13, color: COLORS.ink, lineHeight: 1.6 }}>
+              Hi {(policy.name || "there").split(" ")[0]}, here's your {lobMeta(policy.lob).label} insurance quote from {policy.insurer || "your insurer"} —
+              premium <b>{currency(policy.premium)}</b>/yr, valid till {policy.end || "—"}. Reply to confirm and I'll issue the policy today.
+            </div>
+            <button onClick={() => setSent(true)} style={{ marginTop: 16, width: "100%", background: "#25D366", color: "#fff", border: "none", borderRadius: 10, padding: "11px 0", fontWeight: 700, fontSize: 14, cursor: "pointer" }}>
+              Send via WhatsApp
+            </button>
+          </React.Fragment>
+        ) : (
+          <div style={{ textAlign: "center", padding: "10px 0" }}>
+            <div style={{ fontSize: 34 }}>{"✅"}</div>
+            <div style={{ fontFamily: "'Sora', sans-serif", fontWeight: 700, marginTop: 10, color: COLORS.ink }}>Quote sent</div>
+            <div style={{ fontSize: 13, color: COLORS.sub, marginTop: 4 }}>Delivered to {policy.name} on WhatsApp.</div>
+            <button onClick={onClose} style={{ marginTop: 16, background: COLORS.navy, color: "#fff", border: "none", borderRadius: 8, padding: "8px 20px", fontWeight: 600, cursor: "pointer" }}>Done</button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+const policyFields = [
+  { key: "customerId", label: "Customer", type: "customer", required: true },
+  { key: "name", type: "hidden" },
+  { key: "phone", type: "hidden" },
+  { key: "agentName", label: "Agent / advisor name", required: true, placeholder: "e.g. Meera Joshi" },
+  { key: "stage", label: "Policy stage", type: "select", options: STAGE_OPTS, default: "Quote given" },
+  { key: "lob", label: "Line of business", type: "select", options: LOB.map(l => l.key), default: "health" },
+  { key: "insurer", label: "Insurer", placeholder: "e.g. Star Health" },
+  { key: "policyNo", label: "Policy number (optional)", placeholder: "auto-filled from PDF if available" },
+  { key: "premium", label: "Annual premium (₹)", type: "number", placeholder: "e.g. 18400" },
+  { key: "sumInsured", label: "Sum insured (₹) (optional)", type: "number" },
+  { key: "start", label: "Start date", type: "date" },
+  { key: "end", label: "Expiry date", type: "date" },
+  { key: "status", label: "Renewal status (once issued)", type: "select", options: STATUS_OPTS, default: "active" },
+  { key: "quoteDoc", label: "1. Attach quote document (optional, auto-fills fields)", type: "pdf", autofill: true },
+  { key: "underwritingDoc", label: "2. Attach underwriting documents (optional, auto-fills fields)", type: "pdf", autofill: true },
+  { key: "issuedDoc", label: "3. Attach issued policy document (optional, auto-fills fields)", type: "pdf", autofill: true },
+  { key: "renewalNotice", label: "Attach client renewal notice (optional)", type: "pdf" },
+];
+const customerFields = [
+  { key: "attachment", label: "Upload a document to auto-fill (optional)", type: "pdf", autofill: true },
+  { key: "name", label: "Full name", required: true, placeholder: "e.g. Ayesha Khan" },
+  { key: "phone", label: "Mobile number", placeholder: "+91 90000 00000" },
+  { key: "reference", label: "Reference", placeholder: "e.g. referred by Rakesh Menon" },
+  { key: "agentName", label: "Agent / advisor name", required: true, placeholder: "e.g. Meera Joshi" },
+  { key: "policies", label: "No. of policies", type: "number", default: 1 },
+  { key: "tag", label: "Segment", type: "select", options: CUSTOMER_TAGS, default: "New" },
+  { key: "last", label: "Last contact note", placeholder: "e.g. Called yesterday" },
+];
+const claimFields = [
+  { key: "customerId", label: "Customer", type: "customer", required: true },
+  { key: "name", type: "hidden" },
+  { key: "phone", type: "hidden" },
+  { key: "agentName", label: "Agent / advisor name", required: true, placeholder: "e.g. Meera Joshi" },
+  { key: "lob", label: "Line of business", type: "select", options: LOB.map(l => l.key), default: "health" },
+  { key: "claimRegister", label: "Claim register date", type: "date" },
+  { key: "claimId", label: "Claim ID", placeholder: "insurer's claim ID" },
+  { key: "stage", label: "Stage", type: "select", options: CLAIM_STAGES, default: "Submitted" },
+  { key: "amount", label: "Claim amount (₹)", type: "number" },
+  { key: "attachments", label: "Attach claim documents (up to 6)", type: "pdf-multi", max: 6 },
+];
+const agentFields = [
+  { key: "name", label: "Full name", required: true },
+  { key: "role", label: "Role", type: "select", options: ROLE_OPTS, default: "Agent" },
+  { key: "region", label: "Region", placeholder: "e.g. West Zone" },
+  { key: "policiesSold", label: "Policies sold (YTD)", type: "number", default: 0 },
+  { key: "commission", label: "Commission YTD (₹)", type: "number", default: 0 },
+];
+const TASK_STATUS_OPTS = ["Pending", "Completed"];
+const taskFields = [
+  { key: "title", label: "Task", required: true, placeholder: "e.g. Follow up on renewal quote" },
+  { key: "agentName", label: "Agent / advisor name", required: true, placeholder: "e.g. Meera Joshi" },
+  { key: "customerName", label: "Customer / related to (optional)", placeholder: "e.g. Rakesh Menon" },
+  { key: "date", label: "Due date", type: "date", required: true },
+  { key: "time", label: "Due time", type: "time", required: true },
+  { key: "notes", label: "Notes (optional)", placeholder: "" },
+  { key: "status", label: "Status", type: "select", options: TASK_STATUS_OPTS, default: "Pending" },
+];
+const quoteFields = [
+  { key: "customerId", label: "Customer", type: "customer", required: true },
+  { key: "name", type: "hidden" },
+  { key: "phone", type: "hidden" },
+  { key: "agentName", label: "Agent / advisor name", required: true, placeholder: "e.g. Meera Joshi" },
+  { key: "lob", label: "Line of business", type: "select", options: LOB.map(l => l.key), default: "health" },
+  { key: "insurer", label: "Insurer", placeholder: "e.g. Star Health" },
+  { key: "policyNo", label: "Proposed policy number (optional)", placeholder: "" },
+  { key: "premium", label: "Annual premium (₹)", type: "number", placeholder: "e.g. 18400" },
+  { key: "sumInsured", label: "Sum insured (₹) (optional)", type: "number" },
+  { key: "start", label: "Proposed start date (optional)", type: "date" },
+  { key: "end", label: "Proposed expiry date (optional)", type: "date" },
+  { key: "conversionStatus", label: "Conversion status", type: "select", options: QUOTE_STATUS_OPTS, default: "Not converted" },
+  { key: "quoteDoc", label: "Attach quote document (optional, auto-fills fields)", type: "pdf", autofill: true },
+  { key: "underwritingDoc", label: "Attach underwriting documents (optional, auto-fills fields)", type: "pdf", autofill: true },
+];
+
+function RowActions({ onEdit, onDelete, extra }) {
+  return (
+    <div style={{ display: "flex", gap: 6, justifyContent: "flex-end" }}>
+      {extra}
+      <button onClick={onEdit} title="Edit" style={iconBtn}>{"✏️"}</button>
+      <button onClick={onDelete} title="Delete" style={iconBtn}>{"🗑️"}</button>
+    </div>
+  );
+}
+function AttachmentTag({ attachment, label }) {
+  if (!attachment) return null;
+  return <a href="#" onClick={e => { e.preventDefault(); openAttachment(attachment.data); }} style={{ fontSize: 11.5, color: COLORS.tealDeep, fontWeight: 600, textDecoration: "none" }}>{"📎"} {label || "PDF"}</a>;
+}
+
+function getAgentNames(data) {
+  const names = new Set();
+  (data.policies || []).forEach(p => p.agentName && names.add(p.agentName));
+  (data.customers || []).forEach(c => c.agentName && names.add(c.agentName));
+  (data.claims || []).forEach(c => c.agentName && names.add(c.agentName));
+  (data.tasks || []).forEach(t => t.agentName && names.add(t.agentName));
+  (data.quotes || []).forEach(x => x.agentName && names.add(x.agentName));
+  return Array.from(names).sort((a, b) => a.localeCompare(b));
+}
+function AgentFilterSelect({ value, onChange, agentNames }) {
+  if (agentNames.length === 0) return null;
+  return (
+    <select value={value} onChange={e => onChange(e.target.value)} style={{ ...inputStyle, maxWidth: 220 }}>
+      <option value="all">All agents</option>
+      {agentNames.map(n => <option key={n} value={n}>{n}</option>)}
+    </select>
+  );
+}
+
+function DashboardView({ data, onShare, goTab }) {
+  const [agentFilter, setAgentFilter] = useState("all");
+  const agentNames = useMemo(() => getAgentNames(data), [data]);
+  const policies = agentFilter === "all" ? data.policies : data.policies.filter(p => p.agentName === agentFilter);
+  const claims = agentFilter === "all" ? data.claims : data.claims.filter(c => c.agentName === agentFilter);
+  const quotes = agentFilter === "all" ? data.quotes : data.quotes.filter(x => x.agentName === agentFilter);
+  const issuedPolicies = policies.filter(isIssued);
+  const openQuotes = quotes.filter(x => x.conversionStatus !== "Converted");
+  const legacyPipelinePolicies = policies.filter(p => p.stage === "Quote given" || p.stage === "Underwriting");
+  const totalPremium = issuedPolicies.reduce((s, p) => s + Number(p.premium || 0), 0);
+  const pipelinePremium = openQuotes.reduce((s, x) => s + Number(x.premium || 0), 0) + legacyPipelinePolicies.reduce((s, p) => s + Number(p.premium || 0), 0);
+  const pipelineCount = openQuotes.length + legacyPipelinePolicies.length;
+  const expiring = issuedPolicies.filter(p => p.status === "expiring");
+  const openClaims = claims.filter(c => c.stage !== "Approved" && c.stage !== "Rejected");
+  const lobSplit = LOB.map(l => ({ name: l.label, value: issuedPolicies.filter(p => p.lob === l.key).reduce((s, p) => s + Number(p.premium || 0), 0), color: l.color })).filter(x => x.value > 0);
+
+  if (!data.policies.length && !data.claims.length) {
+    return <EmptyState emoji="📥" title="No data yet" sub="Add your first policy to see it reflected on the dashboard." onAdd={() => goTab("policies")} addLabel="Add a policy" />;
+  }
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+      {agentNames.length > 0 && (
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <span style={{ fontSize: 12.5, color: COLORS.sub, fontWeight: 600 }}>Agent:</span>
+          <AgentFilterSelect value={agentFilter} onChange={setAgentFilter} agentNames={agentNames} />
+        </div>
+      )}
+      <div style={{ display: "flex", gap: 14, flexWrap: "wrap" }}>
+        <StatCard label="ISSUED POLICIES" value={issuedPolicies.filter(p => p.status === "active").length} sub="counted as business" emoji="📄" accent={COLORS.navy} />
+        <StatCard label="PREMIUM BOOK" value={currency(totalPremium)} sub="issued policies only" emoji="💰" accent={COLORS.teal} />
+        <StatCard label="IN PIPELINE" value={pipelineCount} sub={`${currency(pipelinePremium)} not yet converted`} emoji="🧾" accent={COLORS.amber} />
+        <StatCard label="RENEWALS DUE" value={expiring.length} sub="marked as expiring" emoji="🔔" accent={COLORS.amber} />
+        <StatCard label="OPEN CLAIMS" value={openClaims.length} sub="in progress" emoji="📁" accent={COLORS.coral} />
+      </div>
+      {lobSplit.length > 0 && (
+        <Card style={{ padding: 20 }}>
+          <div style={{ fontFamily: "'Sora', sans-serif", fontWeight: 700, color: COLORS.ink, marginBottom: 4 }}>Premium by line</div>
+          <div style={{ fontSize: 12.5, color: COLORS.sub, marginBottom: 12 }}>Current book split{agentFilter !== "all" ? ` · ${agentFilter}` : ""}</div>
+          <Donut items={lobSplit} />
+        </Card>
+      )}
+      {expiring.length > 0 && (
+        <Card style={{ padding: 20 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+            <div style={{ fontFamily: "'Sora', sans-serif", fontWeight: 700, color: COLORS.ink }}>Renewals needing attention</div>
+            <Pill tone="amber">{expiring.length} due soon</Pill>
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            {expiring.map(p => (
+              <div key={p.id} style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 4px", borderBottom: `1px solid ${COLORS.line}` }}>
+                <LobBadge lobKey={p.lob} />
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontWeight: 600, fontSize: 13.5, color: COLORS.ink }}>{p.name}</div>
+                  <div style={{ fontSize: 12, color: COLORS.sub }}>{p.insurer} · expires {p.end || "—"}</div>
+                </div>
+                <button onClick={() => onShare(p)} style={{ border: `1px solid ${COLORS.line}`, background: "#fff", borderRadius: 8, padding: "6px 10px", fontSize: 12, fontWeight: 600, color: COLORS.tealDeep, cursor: "pointer" }}>Remind</button>
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
+    </div>
+  );
+}
+
+function PoliciesView({ data, setData, onShare, goTab }) {
+  const [filter, setFilter] = useState("all");
+  const [q, setQ] = useState("");
+  const [modal, setModal] = useState(null);
+  const [confirmId, setConfirmId] = useState(null);
+  const rows = data.policies.filter(p => (filter === "all" || p.lob === filter) && (p.name.toLowerCase().includes(q.toLowerCase()) || (p.policyNo || "").toLowerCase().includes(q.toLowerCase()) || (p.agentName || "").toLowerCase().includes(q.toLowerCase()) || (p.phone || "").replace(/\s/g, "").includes(q.replace(/\s/g, ""))));
+  const save = (values) => {
+    if (modal.mode === "add") setData(d => ({ ...d, policies: [...d.policies, { id: uid("PL"), ...values, premium: Number(values.premium) || 0, sumInsured: Number(values.sumInsured) || 0 }] }));
+    else setData(d => ({ ...d, policies: d.policies.map(p => p.id === modal.item.id ? { ...p, ...values, premium: Number(values.premium) || 0, sumInsured: Number(values.sumInsured) || 0 } : p) }));
+    setModal(null);
+  };
+  const setStage = (id, stage) => setData(d => ({ ...d, policies: d.policies.map(p => p.id === id ? { ...p, stage } : p) }));
+  if (data.customers.length === 0) {
+    return <EmptyState emoji="👥" title="Add a customer first" sub="You need at least one customer before you can add policies." onAdd={() => goTab && goTab("crm")} addLabel="Add a customer" />;
+  }
+  return (
+    <div>
+      <div style={{ display: "flex", gap: 10, marginBottom: 16, flexWrap: "wrap", alignItems: "center" }}>
+        <div style={{ display: "flex", gap: 6, background: "#fff", padding: 4, borderRadius: 10, border: `1px solid ${COLORS.line}`, flexWrap: "wrap" }}>
+          <button onClick={() => setFilter("all")} style={tabBtn(filter === "all")}>All</button>
+          {LOB.map(l => <button key={l.key} onClick={() => setFilter(l.key)} style={tabBtn(filter === l.key)}>{l.emoji} {l.label}</button>)}
+        </div>
+        <div style={{ flex: 1, minWidth: 160 }}>
+          <input value={q} onChange={e => setQ(e.target.value)} placeholder="Search by name, mobile number, or policy no." style={inputStyle} />
+        </div>
+        <button onClick={() => setModal({ mode: "add" })} style={primaryBtn}>+ New policy</button>
+      </div>
+      {rows.length === 0 ? (
+        <EmptyState emoji="📄" title={data.policies.length ? "No matching policies" : "No policies yet"} sub={data.policies.length ? "Try a different search or filter." : "Add your first policy to get started."} onAdd={data.policies.length ? null : () => setModal({ mode: "add" })} addLabel="Add a policy" />
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          {rows.map(p => (
+            <Card key={p.id} style={{ padding: 14 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                <LobBadge lobKey={p.lob} size={30} />
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontWeight: 600, fontSize: 14, color: COLORS.ink }}>{p.name}</div>
+                  <div style={{ fontSize: 12, color: COLORS.sub }}>{p.policyNo ? p.policyNo + " · " : ""}{p.insurer || "—"}{p.phone ? " · " + p.phone : ""}</div>
+                  {p.agentName && <div style={{ fontSize: 11.5, color: COLORS.tealDeep, fontWeight: 600, marginTop: 2 }}>Agent: {p.agentName}</div>}
+                </div>
+                <Pill tone={stageTone(p.stage || "Issued")}>{p.stage || "Issued"}</Pill>
+              </div>
+
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 10 }}>
+                {STAGE_OPTS.map(s => (
+                  <button
+                    key={s}
+                    onClick={() => setStage(p.id, s)}
+                    style={{
+                      border: `1px solid ${(p.stage || "Issued") === s ? COLORS.navy : COLORS.line}`,
+                      background: (p.stage || "Issued") === s ? COLORS.navy : "#fff",
+                      color: (p.stage || "Issued") === s ? "#fff" : COLORS.sub,
+                      borderRadius: 7, padding: "5px 10px", fontSize: 11.5, fontWeight: 600, cursor: "pointer",
+                    }}
+                  >{s}</button>
+                ))}
+              </div>
+
+              {(p.status === "active" || p.status === "expiring" || p.status === "lapsed") && isIssued(p) && (
+                <div style={{ marginTop: 8 }}>
+                  {p.status === "active" && <Pill tone="teal">Renewal: Active</Pill>}
+                  {p.status === "expiring" && <Pill tone="amber">Renewal: Expiring</Pill>}
+                  {p.status === "lapsed" && <Pill tone="coral">Renewal: Lapsed</Pill>}
+                </div>
+              )}
+
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 10, flexWrap: "wrap", gap: 8 }}>
+                <div style={{ fontSize: 13, color: COLORS.sub, display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                  <span>{currency(p.premium)}/yr · expires {p.end || "—"}</span>
+                  <AttachmentTag attachment={p.quoteDoc} label="Quote" />
+                  <AttachmentTag attachment={p.underwritingDoc} label="Underwriting" />
+                  <AttachmentTag attachment={p.issuedDoc} label="Issued" />
+                  {p.renewalNotice && <a href="#" onClick={e => { e.preventDefault(); openAttachment(p.renewalNotice.data); }} style={{ fontSize: 11.5, color: COLORS.amber, fontWeight: 600, textDecoration: "none" }}>📋 Renewal notice</a>}
+                </div>
+                <RowActions onEdit={() => setModal({ mode: "edit", item: p })} onDelete={() => setConfirmId(p.id)} extra={<button onClick={() => onShare(p)} title="WhatsApp" style={iconBtn}>{"💬"}</button>} />
+              </div>
+            </Card>
+          ))}
+        </div>
+      )}
+      {modal && <FormModal title={modal.mode === "add" ? "Add policy" : "Edit policy"} fields={policyFields} initial={modal.item} onCancel={() => setModal(null)} onSave={save} agentOptions={data.agents.map(a => a.name)} customers={data.customers} />}
+      {confirmId && <ConfirmModal text="Delete this policy? This can't be undone." onCancel={() => setConfirmId(null)} onConfirm={() => { setData(d => ({ ...d, policies: d.policies.filter(p => p.id !== confirmId) })); setConfirmId(null); }} />}
+    </div>
+  );
+}
+
+function CalculatorView() {
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+      <Card style={{ padding: "14px 16px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
+        <div style={{ fontSize: 12.5, color: COLORS.sub }}>Niva Bupa Aspire &amp; ReAssure 3.0 premium calculator</div>
+        <a href="premium-calculator.html" target="_blank" rel="noreferrer" style={{ ...ghostBtn, textDecoration: "none", fontSize: 12.5, padding: "7px 12px" }}>Open full screen ↗</a>
+      </Card>
+      <div style={{ borderRadius: 14, overflow: "hidden", border: `1px solid ${COLORS.line}`, background: "#fff" }}>
+        <iframe
+          src="premium-calculator.html"
+          title="Premium Calculator"
+          style={{ width: "100%", height: "78vh", border: "none", display: "block" }}
+        />
+      </div>
+    </div>
+  );
+}
+
+function QuotationView({ data, setData, goTab }) {
+  const [modal, setModal] = useState(null);
+  const [confirmId, setConfirmId] = useState(null);
+  const [q, setQ] = useState("");
+
+  const rows = data.quotes.filter(x =>
+    x.name.toLowerCase().includes(q.toLowerCase()) ||
+    (x.insurer || "").toLowerCase().includes(q.toLowerCase()) ||
+    (x.agentName || "").toLowerCase().includes(q.toLowerCase()) ||
+    (x.phone || "").replace(/\s/g, "").includes(q.replace(/\s/g, ""))
+  );
+
+  // Creates the linked policy the first time a quote becomes Converted; never duplicates on repeat toggles.
+  const applyStatus = (quoteBase, newValues, editingId) => {
+    setData(d => {
+      let policies = d.policies;
+      const merged = { ...quoteBase, ...newValues, premium: Number(newValues.premium ?? quoteBase.premium) || 0, sumInsured: Number(newValues.sumInsured ?? quoteBase.sumInsured) || 0 };
+      let convertedPolicyId = quoteBase.convertedPolicyId || null;
+      if (merged.conversionStatus === "Converted" && !convertedPolicyId) {
+        const newPolicy = policyFromQuote(merged);
+        policies = [...policies, newPolicy];
+        convertedPolicyId = newPolicy.id;
+      }
+      const finalQuote = { ...merged, convertedPolicyId };
+      const quotes = editingId
+        ? d.quotes.map(x => x.id === editingId ? finalQuote : x)
+        : [...d.quotes, finalQuote];
+      return { ...d, policies, quotes };
+    });
+  };
+
+  const save = (values) => {
+    if (modal.mode === "add") applyStatus({ id: uid("QT"), convertedPolicyId: null }, values, null);
+    else applyStatus(modal.item, values, modal.item.id);
+    setModal(null);
+  };
+  const quickStatus = (quote, status) => applyStatus(quote, { conversionStatus: status }, quote.id);
+
+  if (data.customers.length === 0) {
+    return <EmptyState emoji="👥" title="Add a customer first" sub="You need at least one customer before you can add a quote." onAdd={() => goTab && goTab("crm")} addLabel="Add a customer" />;
+  }
+  return (
+    <div>
+      <div style={{ display: "flex", gap: 10, marginBottom: 16, flexWrap: "wrap", alignItems: "center" }}>
+        <div style={{ flex: 1, minWidth: 160 }}>
+          <input value={q} onChange={e => setQ(e.target.value)} placeholder="Search by name, mobile, agent, or insurer" style={inputStyle} />
+        </div>
+        <button onClick={() => setModal({ mode: "add" })} style={primaryBtn}>+ New quote</button>
+      </div>
+
+      {rows.length === 0 ? (
+        <EmptyState emoji="✨" title={data.quotes.length ? "No matching quotes" : "No quotes yet"} sub={data.quotes.length ? "Try a different search." : "Add a quote — mark it Converted once it becomes a real policy."} onAdd={data.quotes.length ? null : () => setModal({ mode: "add" })} addLabel="Add a quote" />
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          {rows.map(x => (
+            <Card key={x.id} style={{ padding: 14 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                <LobBadge lobKey={x.lob} size={30} />
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontWeight: 600, fontSize: 14, color: COLORS.ink }}>{x.name}</div>
+                  <div style={{ fontSize: 12, color: COLORS.sub }}>{x.insurer || "—"}{x.phone ? " · " + x.phone : ""}</div>
+                  {x.agentName && <div style={{ fontSize: 11.5, color: COLORS.tealDeep, fontWeight: 600, marginTop: 2 }}>Agent: {x.agentName}</div>}
+                </div>
+                <Pill tone={quoteStatusTone(x.conversionStatus)}>{x.conversionStatus}</Pill>
+              </div>
+
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 10 }}>
+                {QUOTE_STATUS_OPTS.map(s => (
+                  <button
+                    key={s}
+                    onClick={() => quickStatus(x, s)}
+                    style={{
+                      border: `1px solid ${x.conversionStatus === s ? COLORS.navy : COLORS.line}`,
+                      background: x.conversionStatus === s ? COLORS.navy : "#fff",
+                      color: x.conversionStatus === s ? "#fff" : COLORS.sub,
+                      borderRadius: 7, padding: "5px 10px", fontSize: 11.5, fontWeight: 600, cursor: "pointer",
+                    }}
+                  >{s}</button>
+                ))}
+              </div>
+
+              {x.convertedPolicyId && (
+                <div style={{ marginTop: 8, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                  <Pill tone="teal">✓ Converted to policy</Pill>
+                  {goTab && <button onClick={() => goTab("policies")} style={{ ...ghostBtn, padding: "5px 10px", fontSize: 11.5 }}>View in Policies →</button>}
+                </div>
+              )}
+
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 10, flexWrap: "wrap", gap: 8 }}>
+                <div style={{ fontSize: 13, color: COLORS.sub, display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                  <span>{currency(x.premium)}/yr{x.sumInsured ? ` · SI ${currency(x.sumInsured)}` : ""}</span>
+                  <AttachmentTag attachment={x.quoteDoc} label="Quote doc" />
+                  <AttachmentTag attachment={x.underwritingDoc} label="Underwriting" />
+                </div>
+                <RowActions onEdit={() => setModal({ mode: "edit", item: x })} onDelete={() => setConfirmId(x.id)} />
+              </div>
+            </Card>
+          ))}
+        </div>
+      )}
+
+      {modal && <FormModal title={modal.mode === "add" ? "Add quote" : "Edit quote"} fields={quoteFields} initial={modal.item} onCancel={() => setModal(null)} onSave={save} agentOptions={data.agents.map(a => a.name)} customers={data.customers} />}
+      {confirmId && <ConfirmModal text="Delete this quote? This can't be undone. (Any policy it was already converted to will not be removed.)" onCancel={() => setConfirmId(null)} onConfirm={() => { setData(d => ({ ...d, quotes: d.quotes.filter(x => x.id !== confirmId) })); setConfirmId(null); }} />}
+    </div>
+  );
+}
+
+function CrmView({ data, setData }) {
+  const [modal, setModal] = useState(null);
+  const [confirmIdx, setConfirmIdx] = useState(null);
+  const [q, setQ] = useState("");
+  const save = (values) => {
+    if (modal.mode === "add") setData(d => ({ ...d, customers: [...d.customers, { id: uid("CU"), ...values }] }));
+    else setData(d => ({ ...d, customers: d.customers.map(c => c.id === modal.item.id ? { ...c, ...values } : c) }));
+    setModal(null);
+  };
+  const rows = data.customers
+    .map((c, i) => ({ c, i }))
+    .filter(({ c }) => c.name.toLowerCase().includes(q.toLowerCase()) || (c.agentName || "").toLowerCase().includes(q.toLowerCase()) || (c.phone || "").replace(/\s/g, "").includes(q.replace(/\s/g, "")));
+  return (
+    <div>
+      <div style={{ display: "flex", gap: 10, marginBottom: 14, alignItems: "center" }}>
+        <div style={{ flex: 1 }}>
+          <input value={q} onChange={e => setQ(e.target.value)} placeholder="Search by name or mobile number" style={inputStyle} />
+        </div>
+        <button onClick={() => setModal({ mode: "add" })} style={primaryBtn}>+ New customer</button>
+      </div>
+      {data.customers.length === 0 ? (
+        <EmptyState emoji="👥" title="No customers yet" sub="Add a customer, or upload a document to auto-fill their details." onAdd={() => setModal({ mode: "add" })} addLabel="Add a customer" />
+      ) : rows.length === 0 ? (
+        <EmptyState emoji="👥" title="No matching customers" sub="Try a different name or number." />
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          {rows.map(({ c, i }) => (
+            <Card key={i} style={{ padding: 14 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <div style={{ width: 32, height: 32, borderRadius: "50%", background: COLORS.navy, color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, fontWeight: 700 }}>{c.name.split(" ").map(n => n[0]).join("").slice(0, 2)}</div>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontWeight: 600, color: COLORS.ink, fontSize: 14 }}>{c.name}</div>
+                  <div style={{ fontSize: 12, color: COLORS.sub }}>{c.phone || "—"}</div>
+                  {c.reference && <div style={{ fontSize: 11.5, color: COLORS.sub, marginTop: 2 }}>Ref: {c.reference}</div>}
+                  {c.agentName && <div style={{ fontSize: 11.5, color: COLORS.tealDeep, fontWeight: 600, marginTop: 2 }}>Agent: {c.agentName}</div>}
+                </div>
+                <Pill tone={c.tag === "VIP" ? "navy" : c.tag === "Renewal due" ? "amber" : "teal"}>{c.tag}</Pill>
+              </div>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 10 }}>
+                <div style={{ fontSize: 12.5, color: COLORS.sub, display: "flex", alignItems: "center", gap: 10 }}>
+                  <span>{c.policies || 0} polic{(c.policies === 1) ? "y" : "ies"} · {c.last || "no contact logged"}</span>
+                  <AttachmentTag attachment={c.attachment} />
+                </div>
+                <RowActions onEdit={() => setModal({ mode: "edit", item: c })} onDelete={() => setConfirmIdx(i)} />
+              </div>
+            </Card>
+          ))}
+        </div>
+      )}
+      {modal && <FormModal title={modal.mode === "add" ? "Add customer" : "Edit customer"} fields={customerFields} initial={modal.item} onCancel={() => setModal(null)} onSave={save} agentOptions={data.agents.map(a => a.name)} />}
+      {confirmIdx !== null && <ConfirmModal text="Delete this customer? This can't be undone." onCancel={() => setConfirmIdx(null)} onConfirm={() => { setData(d => ({ ...d, customers: d.customers.filter((_, i) => i !== confirmIdx) })); setConfirmIdx(null); }} />}
+    </div>
+  );
+}
+
+function RenewalsView({ data, setData, onShare }) {
+  const [modal, setModal] = useState(null);
+  const rows = data.policies.filter(isIssued).sort((a, b) => (a.end || "").localeCompare(b.end || ""));
+  const save = (values) => {
+    setData(d => ({ ...d, policies: d.policies.map(p => p.id === modal.item.id ? { ...p, ...values, premium: Number(values.premium) || 0, sumInsured: Number(values.sumInsured) || 0 } : p) }));
+    setModal(null);
+  };
+  if (rows.length === 0) return <EmptyState emoji="🔔" title="No renewals to track yet" sub="Renewals are pulled from your policies — add a policy first." />;
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+      {rows.map(p => {
+        const urgent = p.status === "expiring", lapsed = p.status === "lapsed";
+        return (
+          <Card key={p.id} style={{ padding: 14 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+              <LobBadge lobKey={p.lob} size={28} />
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontWeight: 600, fontSize: 13.5, color: COLORS.ink }}>{p.name}</div>
+                <div style={{ fontSize: 12, color: COLORS.sub }}>{p.insurer || "—"} · {currency(p.premium)}/yr · renews {p.end || "—"}{p.phone ? " · " + p.phone : ""}</div>
+                {p.agentName && <div style={{ fontSize: 11.5, color: COLORS.tealDeep, fontWeight: 600, marginTop: 2 }}>Agent: {p.agentName}</div>}
+              </div>
+              {lapsed ? <Pill tone="coral">Lapsed</Pill> : urgent ? <Pill tone="amber">Due soon</Pill> : <Pill tone="teal">On track</Pill>}
+            </div>
+            {p.renewalNotice && (
+              <div style={{ marginTop: 8 }}>
+                <a href="#" onClick={e => { e.preventDefault(); openAttachment(p.renewalNotice.data); }} style={{ fontSize: 11.5, color: COLORS.amber, fontWeight: 600, textDecoration: "none" }}>📋 View renewal notice</a>
+              </div>
+            )}
+            <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+              <button onClick={() => setModal({ item: p })} style={{ ...ghostBtn, flex: 1, justifyContent: "center" }}>Edit / Attach notice</button>
+              <button onClick={() => onShare(p)} style={{ ...primaryBtn, flex: 1, justifyContent: "center" }}>Remind via WhatsApp</button>
+            </div>
+          </Card>
+        );
+      })}
+      {modal && <FormModal title="Edit policy" fields={policyFields} initial={modal.item} onCancel={() => setModal(null)} onSave={save} agentOptions={data.agents.map(a => a.name)} />}
+    </div>
+  );
+}
+
+function ClaimsView({ data, setData, goTab }) {
+  const [modal, setModal] = useState(null);
+  const [confirmId, setConfirmId] = useState(null);
+  const [q, setQ] = useState("");
+  const stageColor = { "Submitted": "navy", "Documents pending": "amber", "Under review": "amber", "Approved": "teal", "Rejected": "coral" };
+  const save = (values) => {
+    if (modal.mode === "add") setData(d => ({ ...d, claims: [...d.claims, { id: uid("CL"), ...values, amount: Number(values.amount) || 0 }] }));
+    else setData(d => ({ ...d, claims: d.claims.map(c => c.id === modal.item.id ? { ...c, ...values, amount: Number(values.amount) || 0 } : c) }));
+    setModal(null);
+  };
+  if (data.customers.length === 0) {
+    return <EmptyState emoji="👥" title="Add a customer first" sub="You need at least one customer before you can log a claim." onAdd={() => goTab && goTab("crm")} addLabel="Add a customer" />;
+  }
+  const rows = data.claims.filter(c =>
+    c.name.toLowerCase().includes(q.toLowerCase()) ||
+    (c.claimId || "").toLowerCase().includes(q.toLowerCase()) ||
+    (c.claimRegister || "").toLowerCase().includes(q.toLowerCase()) ||
+    (c.agentName || "").toLowerCase().includes(q.toLowerCase()) ||
+    (c.phone || "").replace(/\s/g, "").includes(q.replace(/\s/g, ""))
+  );
+  return (
+    <div>
+      <div style={{ display: "flex", gap: 10, marginBottom: 14, flexWrap: "wrap", alignItems: "center" }}>
+        <div style={{ flex: 1, minWidth: 160 }}>
+          <input value={q} onChange={e => setQ(e.target.value)} placeholder="Search by name, mobile, claim ID, or register no." style={inputStyle} />
+        </div>
+        <button onClick={() => setModal({ mode: "add" })} style={primaryBtn}>+ New claim</button>
+      </div>
+      {rows.length === 0 ? (
+        <EmptyState emoji="📁" title={data.claims.length ? "No matching claims" : "No claims logged"} sub={data.claims.length ? "Try a different search." : "Add a claim to start tracking it through to settlement."} onAdd={data.claims.length ? null : () => setModal({ mode: "add" })} addLabel="Add a claim" />
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          {rows.map(c => (
+            <Card key={c.id} style={{ padding: 14 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                <LobBadge lobKey={c.lob} size={28} />
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontWeight: 600, fontSize: 14, color: COLORS.ink }}>{c.name}</div>
+                  <div style={{ fontSize: 12, color: COLORS.sub }}>{currency(c.amount)}{c.phone ? " · " + c.phone : ""}</div>
+                  <div style={{ fontSize: 11.5, color: COLORS.sub, marginTop: 1 }}>
+                    {c.claimRegister ? `Registered: ${c.claimRegister}` : ""}{c.claimRegister && c.claimId ? " · " : ""}{c.claimId ? `Claim ID: ${c.claimId}` : ""}
+                  </div>
+                  {c.agentName && <div style={{ fontSize: 11.5, color: COLORS.tealDeep, fontWeight: 600, marginTop: 2 }}>Agent: {c.agentName}</div>}
+                </div>
+                <Pill tone={stageColor[c.stage] || "navy"}>{c.stage}</Pill>
+              </div>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 10, flexWrap: "wrap", gap: 8 }}>
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                  {(c.attachments || []).map((att, idx) => (
+                    <a key={idx} href="#" onClick={e => { e.preventDefault(); openAttachment(att.data); }} style={{ fontSize: 11.5, color: COLORS.tealDeep, fontWeight: 600, textDecoration: "none" }}>{"📎"} {idx + 1}</a>
+                  ))}
+                  {(!c.attachments || c.attachments.length === 0) && <span style={{ fontSize: 11.5, color: COLORS.sub }}>No documents attached</span>}
+                </div>
+                <RowActions onEdit={() => setModal({ mode: "edit", item: c })} onDelete={() => setConfirmId(c.id)} />
+              </div>
+            </Card>
+          ))}
+        </div>
+      )}
+      {modal && <FormModal title={modal.mode === "add" ? "Add claim" : "Edit claim"} fields={claimFields} initial={modal.item} onCancel={() => setModal(null)} onSave={save} agentOptions={data.agents.map(a => a.name)} customers={data.customers} />}
+      {confirmId && <ConfirmModal text="Delete this claim? This can't be undone." onCancel={() => setConfirmId(null)} onConfirm={() => { setData(d => ({ ...d, claims: d.claims.filter(c => c.id !== confirmId) })); setConfirmId(null); }} />}
+    </div>
+  );
+}
+
+// ---------- Tasks: date/time grouping + overdue color escalation ----------
+function timePeriod(timeStr) {
+  if (!timeStr) return "";
+  const h = Number(timeStr.split(":")[0]);
+  if (h < 12) return "Morning";
+  if (h < 17) return "Afternoon";
+  return "Evening";
+}
+function dateLabel(dateStr) {
+  if (!dateStr) return "No date";
+  const d = new Date(dateStr + "T00:00:00");
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const diff = Math.round((d - today) / 86400000);
+  if (diff === 0) return "Today";
+  if (diff === 1) return "Tomorrow";
+  if (diff === -1) return "Yesterday";
+  return d.toLocaleDateString("en-IN", { weekday: "short", day: "2-digit", month: "short", year: d.getFullYear() !== today.getFullYear() ? "numeric" : undefined });
+}
+function taskUrgency(task) {
+  if (task.status === "Completed") return { state: "done" };
+  if (!task.date) return { state: "upcoming" };
+  const deadline = new Date(`${task.date}T${task.time || "23:59"}`);
+  const now = new Date();
+  if (deadline >= now) return { state: "upcoming" };
+  const daysOverdue = Math.floor((now - deadline) / 86400000);
+  if (daysOverdue > 4) return { state: "critical", daysOverdue };
+  return { state: "overdue", daysOverdue };
+}
+function urgencyStyle(urgency) {
+  switch (urgency.state) {
+    case "critical": return { border: COLORS.bloodRed, pillTone: "coral", pillText: `${urgency.daysOverdue}d overdue`, pillBg: "#FBE1DC", pillFg: COLORS.bloodRed };
+    case "overdue": return { border: COLORS.amber, pillTone: "amber", pillText: `${urgency.daysOverdue}d overdue`, pillBg: "#FBF0DD", pillFg: "#9C6B14" };
+    case "done": return { border: COLORS.line, pillTone: "teal", pillText: "Completed", pillBg: "#E5F5F3", pillFg: COLORS.tealDeep };
+    default: return { border: COLORS.line, pillTone: "navy", pillText: "Upcoming", pillBg: "#E9EDF6", pillFg: COLORS.navy };
+  }
+}
+
+function TasksView({ data, setData }) {
+  const [modal, setModal] = useState(null);
+  const [confirmId, setConfirmId] = useState(null);
+  const [filter, setFilter] = useState("pending");
+  const [agentFilter, setAgentFilter] = useState("all");
+  const agentNames = useMemo(() => getAgentNames(data), [data]);
+
+  const save = (values) => {
+    if (modal.mode === "add") setData(d => ({ ...d, tasks: [...d.tasks, { id: uid("TSK"), ...values }] }));
+    else setData(d => ({ ...d, tasks: d.tasks.map(t => t.id === modal.item.id ? { ...t, ...values } : t) }));
+    setModal(null);
+  };
+  const toggleStatus = (t) => {
+    setData(d => ({ ...d, tasks: d.tasks.map(x => x.id === t.id ? { ...x, status: x.status === "Completed" ? "Pending" : "Completed" } : x) }));
+  };
+
+  const rows = data.tasks
+    .filter(t => filter === "all" || (filter === "pending" ? t.status !== "Completed" : t.status === "Completed"))
+    .filter(t => agentFilter === "all" || t.agentName === agentFilter)
+    .sort((a, b) => `${a.date}T${a.time || "00:00"}`.localeCompare(`${b.date}T${b.time || "00:00"}`));
+
+  // group consecutive tasks by date for date-wise headers
+  const groups = [];
+  rows.forEach(t => {
+    const label = dateLabel(t.date);
+    let g = groups.find(x => x.label === label && x.dateKey === t.date);
+    if (!g) { g = { label, dateKey: t.date, items: [] }; groups.push(g); }
+    g.items.push(t);
+  });
+
+  return (
+    <div>
+      <div style={{ display: "flex", gap: 10, marginBottom: 16, flexWrap: "wrap", alignItems: "center" }}>
+        <div style={{ display: "flex", gap: 6, background: "#fff", padding: 4, borderRadius: 10, border: `1px solid ${COLORS.line}` }}>
+          <button onClick={() => setFilter("pending")} style={tabBtn(filter === "pending")}>Pending</button>
+          <button onClick={() => setFilter("done")} style={tabBtn(filter === "done")}>Completed</button>
+          <button onClick={() => setFilter("all")} style={tabBtn(filter === "all")}>All</button>
+        </div>
+        {agentNames.length > 0 && <AgentFilterSelect value={agentFilter} onChange={setAgentFilter} agentNames={agentNames} />}
+        <div style={{ flex: 1 }} />
+        <button onClick={() => setModal({ mode: "add" })} style={primaryBtn}>+ New task</button>
+      </div>
+
+      {rows.length === 0 ? (
+        <EmptyState emoji="✅" title={data.tasks.length ? "No matching tasks" : "No tasks yet"} sub={data.tasks.length ? "Try a different filter." : "Add a task with a due date and time to start tracking follow-ups."} onAdd={data.tasks.length ? null : () => setModal({ mode: "add" })} addLabel="Add a task" />
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
+          {groups.map((g, gi) => (
+            <div key={gi}>
+              <div style={{ fontSize: 12.5, fontWeight: 700, color: COLORS.sub, marginBottom: 8, textTransform: "uppercase", letterSpacing: 0.3 }}>{g.label}</div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                {g.items.map(t => {
+                  const urgency = taskUrgency(t);
+                  const s = urgencyStyle(urgency);
+                  const isDone = t.status === "Completed";
+                  return (
+                    <Card key={t.id} style={{ padding: 14, borderLeft: `4px solid ${s.border}` }}>
+                      <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
+                        <div
+                          onClick={() => toggleStatus(t)}
+                          title={isDone ? "Mark as pending" : "Mark as completed"}
+                          style={{
+                            width: 22, height: 22, borderRadius: 6, border: `1.5px solid ${isDone ? COLORS.teal : COLORS.line}`,
+                            background: isDone ? COLORS.teal : "#fff", display: "flex", alignItems: "center", justifyContent: "center",
+                            cursor: "pointer", flexShrink: 0, marginTop: 1, fontSize: 13, color: "#fff",
+                          }}
+                        >{isDone ? "✓" : ""}</div>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ fontWeight: 600, fontSize: 14, color: isDone ? COLORS.sub : COLORS.ink, textDecoration: isDone ? "line-through" : "none" }}>{t.title}</div>
+                          <div style={{ fontSize: 12, color: COLORS.sub, marginTop: 2 }}>
+                            {timePeriod(t.time)} · {t.time || "—"}{t.customerName ? ` · ${t.customerName}` : ""}
+                          </div>
+                          {t.agentName && <div style={{ fontSize: 11.5, color: COLORS.tealDeep, fontWeight: 600, marginTop: 2 }}>Agent: {t.agentName}</div>}
+                          {t.notes && <div style={{ fontSize: 12, color: COLORS.sub, marginTop: 4 }}>{t.notes}</div>}
+                        </div>
+                        <span style={{ background: s.pillBg, color: s.pillFg, fontSize: 11.5, fontWeight: 700, padding: "3px 9px", borderRadius: 999, whiteSpace: "nowrap" }}>{s.pillText}</span>
+                      </div>
+                      <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 10 }}>
+                        <RowActions onEdit={() => setModal({ mode: "edit", item: t })} onDelete={() => setConfirmId(t.id)} />
+                      </div>
+                    </Card>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+      {modal && <FormModal title={modal.mode === "add" ? "Add task" : "Edit task"} fields={taskFields} initial={modal.item} onCancel={() => setModal(null)} onSave={save} agentOptions={data.agents.map(a => a.name)} />}
+      {confirmId && <ConfirmModal text="Delete this task? This can't be undone." onCancel={() => setConfirmId(null)} onConfirm={() => { setData(d => ({ ...d, tasks: d.tasks.filter(t => t.id !== confirmId) })); setConfirmId(null); }} />}
+    </div>
+  );
+}
+
+function ReportsView({ data }) {
+  const { agents } = data;
+  const [agentFilter, setAgentFilter] = useState("all");
+  const agentNames = useMemo(() => getAgentNames(data), [data]);
+
+  if (agents.length === 0 && agentNames.length === 0) {
+    return <EmptyState emoji="📈" title="No agent data yet" sub="Add agents or BDMs, or tag policies with an agent name, to see reports." />;
+  }
+
+  const filteredPolicies = agentFilter === "all" ? data.policies : data.policies.filter(p => p.agentName === agentFilter);
+  const filteredClaims = agentFilter === "all" ? data.claims : data.claims.filter(c => c.agentName === agentFilter);
+  const issuedFiltered = filteredPolicies.filter(isIssued);
+  const livePremium = issuedFiltered.reduce((s, p) => s + Number(p.premium || 0), 0);
+  const liveOpenClaims = filteredClaims.filter(c => c.stage !== "Approved" && c.stage !== "Rejected").length;
+
+  const totalCommission = agents.reduce((s, a) => s + Number(a.commission || 0), 0);
+  const totalPolicies = agents.reduce((s, a) => s + Number(a.policiesSold || 0), 0);
+  const bars = agents.map(a => ({ name: a.name, value: Number(a.commission || 0), color: COLORS.teal }));
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      {agentNames.length > 0 && (
+        <React.Fragment>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <span style={{ fontSize: 12.5, color: COLORS.sub, fontWeight: 600 }}>Agent:</span>
+            <AgentFilterSelect value={agentFilter} onChange={setAgentFilter} agentNames={agentNames} />
+          </div>
+          <div>
+            <div style={{ fontSize: 12.5, color: COLORS.sub, fontWeight: 600, marginBottom: 8 }}>From your records{agentFilter !== "all" ? ` · ${agentFilter}` : " · all agents"}</div>
+            <div style={{ display: "flex", gap: 14, flexWrap: "wrap" }}>
+              <StatCard label="POLICIES LOGGED" value={filteredPolicies.length} sub={`${issuedFiltered.length} issued`} emoji="📄" accent={COLORS.navy} />
+              <StatCard label="PREMIUM BOOKED" value={currency(livePremium)} sub="issued policies only" emoji="💰" accent={COLORS.teal} />
+              <StatCard label="OPEN CLAIMS" value={liveOpenClaims} emoji="📁" accent={COLORS.coral} />
+            </div>
+          </div>
+        </React.Fragment>
+      )}
+      {agents.length > 0 && (
+        <React.Fragment>
+          <div style={{ display: "flex", gap: 14, flexWrap: "wrap" }}>
+            <StatCard label="TOTAL COMMISSION" value={currency(totalCommission)} emoji="📈" accent={COLORS.teal} />
+            <StatCard label="POLICIES SOLD" value={totalPolicies} emoji="📄" accent={COLORS.navy} />
+            <StatCard label="AVG / AGENT" value={currency(Math.round(totalCommission / agents.length))} emoji="💰" accent={COLORS.amber} />
+          </div>
+          <Card style={{ padding: 20 }}>
+            <div style={{ fontFamily: "'Sora', sans-serif", fontWeight: 700, color: COLORS.ink, marginBottom: 14 }}>Commission by agent</div>
+            <Bars items={bars} />
+          </Card>
+        </React.Fragment>
+      )}
+    </div>
+  );
+}
+
+function AgentsView({ data, setData }) {
+  const [modal, setModal] = useState(null);
+  const [confirmIdx, setConfirmIdx] = useState(null);
+  const save = (values) => {
+    const v = { ...values, policiesSold: Number(values.policiesSold) || 0, commission: Number(values.commission) || 0 };
+    if (modal.mode === "add") setData(d => ({ ...d, agents: [...d.agents, v] }));
+    else setData(d => ({ ...d, agents: d.agents.map((a, i) => i === modal.index ? v : a) }));
+    setModal(null);
+  };
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 14 }}>
+        <button onClick={() => setModal({ mode: "add" })} style={primaryBtn}>+ Add agent</button>
+      </div>
+      {data.agents.length === 0 ? (
+        <EmptyState emoji="🧑‍💼" title="No agents yet" sub="Add your agents and BDMs to manage your network." onAdd={() => setModal({ mode: "add" })} addLabel="Add an agent" />
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          {data.agents.map((a, i) => (
+            <Card key={i} style={{ padding: 14 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontWeight: 600, color: COLORS.ink, fontSize: 14 }}>{a.name}</div>
+                  <div style={{ fontSize: 12, color: COLORS.sub }}>{a.region || "—"}</div>
+                </div>
+                <Pill tone={a.role === "BDM" ? "navy" : "teal"}>{a.role}</Pill>
+              </div>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 10 }}>
+                <div style={{ fontSize: 12.5, color: COLORS.sub }}>{a.policiesSold || 0} sold · {currency(a.commission)}</div>
+                <RowActions onEdit={() => setModal({ mode: "edit", item: a, index: i })} onDelete={() => setConfirmIdx(i)} />
+              </div>
+            </Card>
+          ))}
+        </div>
+      )}
+      {modal && <FormModal title={modal.mode === "add" ? "Add agent" : "Edit agent"} fields={agentFields} initial={modal.item} onCancel={() => setModal(null)} onSave={save} />}
+      {confirmIdx !== null && <ConfirmModal text="Remove this agent? This can't be undone." onCancel={() => setConfirmIdx(null)} onConfirm={() => { setData(d => ({ ...d, agents: d.agents.filter((_, i) => i !== confirmIdx) })); setConfirmIdx(null); }} />}
+    </div>
+  );
+}
+
+const primaryBtn = { background: COLORS.navy, color: "#fff", border: "none", borderRadius: 8, padding: "10px 14px", fontSize: 13, fontWeight: 700, cursor: "pointer", display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 6 };
+const ghostBtn = { background: "#fff", color: COLORS.ink, border: `1px solid ${COLORS.line}`, borderRadius: 8, padding: "10px 14px", fontSize: 13, fontWeight: 700, cursor: "pointer" };
+const iconBtn = { border: `1px solid ${COLORS.line}`, background: "#fff", borderRadius: 8, width: 34, height: 34, display: "inline-flex", alignItems: "center", justifyContent: "center", cursor: "pointer", fontSize: 14 };
+const inputStyle = { width: "100%", padding: "10px 12px", borderRadius: 8, border: `1px solid ${COLORS.line}`, fontSize: 14, boxSizing: "border-box", background: "#fff" };
+function tabBtn(active) { return { border: "none", background: active ? COLORS.navy : "transparent", color: active ? "#fff" : COLORS.sub, borderRadius: 7, padding: "7px 11px", fontSize: 12.5, fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap" }; }
+
+// ---------- IndexedDB storage (fallback only — used if native SQLite isn't available, e.g. plain browser preview) ----------
+const IDB_NAME = "agenex-advisors-db";
+const IDB_STORE = "kv";
+function idbOpen() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(IDB_NAME, 1);
+    req.onupgradeneeded = () => { req.result.createObjectStore(IDB_STORE); };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+async function idbGet(key) {
+  const db = await idbOpen();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(IDB_STORE, "readonly");
+    const req = tx.objectStore(IDB_STORE).get(key);
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+async function idbSet(key, value) {
+  const db = await idbOpen();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(IDB_STORE, "readwrite");
+    tx.objectStore(IDB_STORE).put(value, key);
+    tx.oncomplete = () => resolve(true);
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+// ---------- Native SQLite storage (real on-device database file — @capacitor-community/sqlite) ----------
+// Stored as a single JSON blob under one key, in a real SQLite .db file inside the app's own
+// native data directory — not WebView/IndexedDB storage. Falls back to IndexedDB above if the
+// plugin isn't installed/synced yet (e.g. previewing in a plain desktop browser).
+const SQLITE_DB_NAME = "secureadvisor";
+let sqliteConnectionOpen = false;
+let sqliteInitPromise = null;
+
+function sqlitePlugin() {
+  const Cap = window.Capacitor;
+  return (Cap && Cap.Plugins && Cap.Plugins.CapacitorSQLite) ? Cap.Plugins.CapacitorSQLite : null;
+}
+
+async function sqliteInit() {
+  if (sqliteInitPromise) return sqliteInitPromise;
+  sqliteInitPromise = (async () => {
+    const db = sqlitePlugin();
+    if (!db) return false;
+    try {
+      try {
+        const existing = await db.isConnection({ database: SQLITE_DB_NAME, readonly: false });
+        if (!existing || !existing.result) {
+          await db.createConnection({ database: SQLITE_DB_NAME, encrypted: false, mode: "no-encryption", version: 1, readonly: false });
+        }
+      } catch (e) {
+        await db.createConnection({ database: SQLITE_DB_NAME, encrypted: false, mode: "no-encryption", version: 1, readonly: false });
+      }
+      await db.open({ database: SQLITE_DB_NAME, readonly: false });
+      await db.execute({ database: SQLITE_DB_NAME, statements: "CREATE TABLE IF NOT EXISTS kv_store (key TEXT PRIMARY KEY NOT NULL, value TEXT);", transaction: true });
+      sqliteConnectionOpen = true;
+      return true;
+    } catch (e) {
+      console.error("SQLite init failed, will fall back to IndexedDB:", e);
+      return false;
+    }
+  })();
+  return sqliteInitPromise;
+}
+
+function extractSqliteRowValue(row) {
+  if (!row) return undefined;
+  if (Array.isArray(row)) return row[0]; // some platforms return positional arrays
+  return row.value;
+}
+
+async function sqliteGet(key) {
+  const ready = await sqliteInit();
+  if (!ready) return undefined;
+  const db = sqlitePlugin();
+  const res = await db.query({ database: SQLITE_DB_NAME, statement: "SELECT value FROM kv_store WHERE key = ?;", values: [key] });
+  const rows = (res && res.values) || [];
+  if (!rows.length) return undefined;
+  const raw = extractSqliteRowValue(rows[0]);
+  if (raw === undefined || raw === null) return undefined;
+  try { return JSON.parse(raw); } catch (e) { return undefined; }
+}
+
+async function sqliteSet(key, value) {
+  const ready = await sqliteInit();
+  if (!ready) return false;
+  const db = sqlitePlugin();
+  const json = JSON.stringify(value);
+  await db.run({ database: SQLITE_DB_NAME, statement: "INSERT OR REPLACE INTO kv_store (key, value) VALUES (?, ?);", values: [key, json], transaction: true });
+  return true;
+}
+
+// Unified storage: tries native SQLite first, falls back to IndexedDB automatically.
+async function storageGet(key) {
+  const fromSqlite = await sqliteGet(key).catch(() => undefined);
+  if (fromSqlite !== undefined) return fromSqlite;
+  if (sqliteConnectionOpen) return undefined; // SQLite is active and simply has no data yet — don't fall through
+  return idbGet(key).catch(() => undefined);
+}
+async function storageSet(key, value) {
+  const wroteSqlite = await sqliteSet(key, value).catch((e) => { console.error("SQLite write failed:", e); return false; });
+  if (wroteSqlite) return true;
+  return idbSet(key, value);
+}
+
+function PdfViewerModal({ dataUrl, onClose }) {
+  const [pages, setPages] = useState([]);
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const [, base64] = dataUrl.split(",");
+        const binary = atob(base64);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+        const pdf = await pdfjsLib.getDocument({ data: bytes }).promise;
+        const imgs = [];
+        const maxPages = Math.min(pdf.numPages, 30);
+        for (let i = 1; i <= maxPages; i++) {
+          if (cancelled) return;
+          const page = await pdf.getPage(i);
+          const viewport = page.getViewport({ scale: 1.5 });
+          const canvas = document.createElement("canvas");
+          canvas.width = viewport.width;
+          canvas.height = viewport.height;
+          const ctx = canvas.getContext("2d");
+          await page.render({ canvasContext: ctx, viewport }).promise;
+          imgs.push(canvas.toDataURL("image/png"));
+        }
+        if (!cancelled) { setPages(imgs); setLoading(false); }
+      } catch (e) {
+        if (!cancelled) { setError("Couldn't render this PDF for preview. You can still download it below."); setLoading(false); }
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [dataUrl]);
+
+  const [downloadBusy, setDownloadBusy] = useState(false);
+
+  const handleDownload = async () => {
+    const isNative = window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform();
+
+    if (isNative && window.Capacitor.Plugins && window.Capacitor.Plugins.Filesystem) {
+      setDownloadBusy(true);
+      let writeResult = null;
+      try {
+        const base64 = dataUrl.split(",")[1];
+        const { Filesystem } = window.Capacitor.Plugins;
+        const filename = `SecureAdvisor_${Date.now()}.pdf`;
+        writeResult = await Filesystem.writeFile({
+          path: filename,
+          data: base64,
+          directory: "CACHE",
+        });
+      } catch (e) {
+        alert("SAVE step failed: " + (e && e.message ? e.message : JSON.stringify(e)));
+        setDownloadBusy(false);
+        return;
+      }
+      try {
+        if (window.Capacitor.Plugins.Share) {
+          await window.Capacitor.Plugins.Share.share({
+            title: "Policy document",
+            url: writeResult.uri,
+          });
+        } else {
+          alert("Saved. You can find it via a file manager app.");
+        }
+      } catch (e) {
+        alert("SHARE step failed: " + (e && e.message ? e.message : JSON.stringify(e)) + "\nFile was saved at: " + writeResult.uri);
+      } finally {
+        setDownloadBusy(false);
+      }
+      return;
+    }
+
+    // Browser fallback (works fine when testing on the website directly)
+    try {
+      const [header, base64] = dataUrl.split(",");
+      const mimeMatch = header.match(/:(.*?);/);
+      const mime = mimeMatch ? mimeMatch[1] : "application/pdf";
+      const binary = atob(base64);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+      const blob = new Blob([bytes], { type: mime });
+      const blobUrl = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = blobUrl;
+      a.download = "document.pdf";
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(blobUrl), 30000);
+    } catch (e) {}
+  };
+
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(11,23,48,0.94)", zIndex: 999, overflowY: "auto" }}>
+      <div style={{ position: "sticky", top: 0, display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 16px", background: COLORS.navyDeep, zIndex: 1 }}>
+        <button onClick={handleDownload} disabled={downloadBusy} style={{ background: COLORS.teal, color: "#fff", border: "none", borderRadius: 8, padding: "9px 16px", fontWeight: 600, fontSize: 13, cursor: downloadBusy ? "default" : "pointer", opacity: downloadBusy ? 0.7 : 1 }}>{downloadBusy ? "Saving…" : "⬇️ Download / Share"}</button>
+        <button onClick={onClose} style={{ background: "transparent", color: "#fff", border: "1px solid #fff", borderRadius: 8, padding: "9px 16px", fontWeight: 600, fontSize: 13, cursor: "pointer" }}>✕ Close</button>
+      </div>
+      <div style={{ padding: 16, textAlign: "center" }}>
+        {loading && <div style={{ color: "#fff", padding: 40, fontSize: 14 }}>Loading PDF…</div>}
+        {error && <div style={{ color: "#fff", padding: 40, fontSize: 14 }}>{error}</div>}
+        {pages.map((src, i) => (
+          <img key={i} src={src} style={{ maxWidth: "100%", marginBottom: 12, borderRadius: 4, boxShadow: "0 2px 12px rgba(0,0,0,0.4)" }} alt={`Page ${i + 1}`} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ---------- Backup / Restore (writes a real file on-device via Capacitor Filesystem, not just browser storage) ----------
+function backupFilename() {
+  const d = new Date();
+  const pad = n => String(n).padStart(2, "0");
+  return `secureadvisor-backup-${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}.json`;
+}
+async function exportBackup(data) {
+  const json = JSON.stringify(data, null, 2);
+  const filename = backupFilename();
+  const Cap = window.Capacitor;
+  const Plugins = Cap && Cap.Plugins;
+  if (Plugins && Plugins.Filesystem) {
+    const { Filesystem, Share } = Plugins;
+    const result = await Filesystem.writeFile({
+      path: filename,
+      data: json,
+      directory: "DOCUMENTS",
+      encoding: "utf8",
+    });
+    if (Share) {
+      try { await Share.share({ title: "SecureAdvisor Backup", text: "SecureAdvisor data backup", url: result.uri }); } catch (e) {}
+    }
+    return { ok: true, mode: "native", path: result.uri || filename };
+  }
+  // Browser/dev fallback — triggers a normal file download
+  const blob = new Blob([json], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+  return { ok: true, mode: "browser", path: filename };
+}
+async function readBackupFile(file) {
+  const text = await file.text();
+  const obj = JSON.parse(text);
+  if (typeof obj !== "object" || obj === null) throw new Error("Not a valid backup file");
+  return obj;
+}
+
+function SettingsView({ data, setData, session }) {
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState("");
+  const [confirmRestore, setConfirmRestore] = useState(null);
+  const fileInputRef = React.useRef(null);
+  const [storageStatus, setStorageStatus] = useState("checking");
+  const [cloudNote, setCloudNote] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    sqliteInit().then(ok => { if (!cancelled) setStorageStatus(ok ? "sqlite" : "browser"); });
+    return () => { cancelled = true; };
+  }, []);
+
+  const logout = async () => {
+    const sb = getSupabase();
+    if (sb) await sb.auth.signOut();
+  };
+  const syncNow = async () => {
+    setCloudNote("Syncing…");
+    const ok = await cloudPush(session.user.id, { ...data, __updatedAt: new Date().toISOString() });
+    setCloudNote(ok ? "Synced just now." : "Couldn't reach the cloud — check your internet connection.");
+  };
+
+  const counts = {
+    customers: data.customers.length, policies: data.policies.length,
+    quotes: data.quotes.length, claims: data.claims.length,
+  };
+
+  const doExport = async () => {
+    setBusy(true); setNote("");
+    try {
+      const res = await exportBackup(data);
+      setNote(res.mode === "native" ? `Backup saved to your device: ${res.path}` : `Backup file downloaded: ${res.path}`);
+    } catch (e) {
+      setNote("Couldn't create the backup. " + (e && e.message ? e.message : ""));
+    }
+    setBusy(false);
+  };
+
+  const onPickFile = (e) => {
+    const file = e.target.files && e.target.files[0];
+    e.target.value = "";
+    if (!file) return;
+    readBackupFile(file)
+      .then(obj => setConfirmRestore(obj))
+      .catch(() => setNote("That doesn't look like a valid SecureAdvisor backup file."));
+  };
+
+  const doRestore = async () => {
+    if (!confirmRestore) return;
+    const merged = { ...EMPTY_DATA, ...confirmRestore };
+    merged.customers = (merged.customers || []).map(c => c.id ? c : { ...c, id: uid("CU") });
+    await storageSet(STORAGE_KEY, merged);
+    setData(merged);
+    setConfirmRestore(null);
+    setNote("Data restored from backup.");
+  };
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+      <Card style={{ padding: 16 }}>
+        <div style={{ fontFamily: "'Sora', sans-serif", fontWeight: 700, fontSize: 15, color: COLORS.ink, marginBottom: 6 }}>Account & cloud sync</div>
+        <div style={{ fontSize: 12.5, color: COLORS.sub, marginBottom: 10 }}>Logged in as <b>{session.user.email}</b>. Your data syncs to this account so it's available on any device you log into.</div>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <button onClick={syncNow} style={primaryBtn}>Sync now</button>
+          <button onClick={logout} style={{ ...primaryBtn, background: "#fff", color: COLORS.ink, border: `1px solid ${COLORS.line}` }}>Log out</button>
+        </div>
+        {cloudNote && <div style={{ fontSize: 12, color: COLORS.tealDeep, fontWeight: 600, marginTop: 8 }}>{cloudNote}</div>}
+      </Card>
+      <Card style={{ padding: 16 }}>
+        <div style={{ fontFamily: "'Sora', sans-serif", fontWeight: 700, fontSize: 15, color: COLORS.ink, marginBottom: 6 }}>Storage engine</div>
+        {storageStatus === "checking" && <div style={{ fontSize: 12.5, color: COLORS.sub }}>Checking…</div>}
+        {storageStatus === "sqlite" && (
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <Pill tone="teal">✓ Native SQLite (on-device)</Pill>
+            <span style={{ fontSize: 11.5, color: COLORS.sub }}>Your data is stored in a real database file on your phone.</span>
+          </div>
+        )}
+        {storageStatus === "browser" && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            <Pill tone="amber">⚠ Browser storage (fallback)</Pill>
+            <span style={{ fontSize: 11.5, color: COLORS.sub }}>The SQLite plugin isn't active — data is currently saved in the app's browser storage instead (this is normal and expected on the web version). Cloud sync still works either way.</span>
+          </div>
+        )}
+      </Card>
+      <Card style={{ padding: 16 }}>
+        <div style={{ fontFamily: "'Sora', sans-serif", fontWeight: 700, fontSize: 15, color: COLORS.ink, marginBottom: 6 }}>Backup</div>
+        <div style={{ fontSize: 12.5, color: COLORS.sub, lineHeight: 1.6, marginBottom: 12 }}>
+          Saves all your data — {counts.customers} customers, {counts.policies} policies, {counts.quotes} quotes, {counts.claims} claims — to a file on your device. Keep it somewhere safe (Google Drive, WhatsApp to yourself, etc.) so you can recover if the app's data is ever cleared.
+        </div>
+        <button onClick={doExport} disabled={busy} style={{ ...primaryBtn, opacity: busy ? 0.6 : 1 }}>{busy ? "Working…" : "Create backup file"}</button>
+      </Card>
+      <Card style={{ padding: 16 }}>
+        <div style={{ fontFamily: "'Sora', sans-serif", fontWeight: 700, fontSize: 15, color: COLORS.ink, marginBottom: 6 }}>Restore</div>
+        <div style={{ fontSize: 12.5, color: COLORS.sub, lineHeight: 1.6, marginBottom: 12 }}>
+          Restore from a previously saved backup file. <b>This replaces all current data</b> — you'll be asked to confirm first.
+        </div>
+        <input ref={fileInputRef} type="file" accept="application/json,.json" onChange={onPickFile} style={inputStyle} />
+      </Card>
+      {note && <div style={{ fontSize: 12.5, color: COLORS.tealDeep, fontWeight: 600 }}>{note}</div>}
+      {confirmRestore && (
+        <ConfirmModal
+          text={`Restore this backup? It contains ${(confirmRestore.customers || []).length} customers, ${(confirmRestore.policies || []).length} policies, ${(confirmRestore.quotes || []).length} quotes, and ${(confirmRestore.claims || []).length} claims. This will replace all data currently in the app.`}
+          onCancel={() => setConfirmRestore(null)}
+          onConfirm={doRestore}
+          confirmLabel="Restore"
+          tone="navy"
+        />
+      )}
+    </div>
+  );
+}
+
+// ---------- Cloud sync (Supabase) — same account across phone & web, "newest change wins" ----------
+// You are just one user, so conflict handling stays simple: whichever device saved most recently wins.
+const SUPABASE_URL = "https://evwawwkbegkoshyevfvu.supabase.co";
+const SUPABASE_ANON_KEY = "sb_publishable_y-uzIYNQWG5o9ZI0Uy6eQw_ahsFe1q6";
+let _supabaseClient = null;
+function getSupabase() {
+  if (_supabaseClient) return _supabaseClient;
+  if (!window.supabase || !window.supabase.createClient) return null;
+  _supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+  return _supabaseClient;
+}
+
+async function cloudPull(userId) {
+  const sb = getSupabase();
+  if (!sb) return null;
+  const { data: row, error } = await sb.from("app_data").select("data, updated_at").eq("user_id", userId).maybeSingle();
+  if (error || !row) return null;
+  return { data: row.data, updatedAt: row.updated_at };
+}
+async function cloudPush(userId, data) {
+  const sb = getSupabase();
+  if (!sb) return false;
+  const { error } = await sb.from("app_data").upsert({ user_id: userId, data, updated_at: new Date().toISOString() }, { onConflict: "user_id" });
+  return !error;
+}
+
+function LoginView({ onSignedIn }) {
+  const [mode, setMode] = useState("login"); // login | signup
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [note, setNote] = useState("");
+
+  const submit = async () => {
+    const sb = getSupabase();
+    if (!sb) { setError("Cloud sync isn't reachable right now — check your internet connection."); return; }
+    setBusy(true); setError(""); setNote("");
+    try {
+      if (mode === "login") {
+        const { error } = await sb.auth.signInWithPassword({ email, password });
+        if (error) throw error;
+        onSignedIn();
+      } else {
+        const { error } = await sb.auth.signUp({ email, password });
+        if (error) throw error;
+        setNote("Account created. Check your email to confirm, then log in.");
+        setMode("login");
+      }
+    } catch (e) {
+      setError(e && e.message ? e.message : "Something went wrong.");
+    }
+    setBusy(false);
+  };
+
+  return (
+    <div style={{ minHeight: "100vh", background: COLORS.bg, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
+      <div style={{ width: "100%", maxWidth: 360, background: "#fff", borderRadius: 16, padding: 24, boxShadow: "0 8px 30px rgba(11,23,48,0.12)" }}>
+        <div style={{ fontFamily: "'Sora', sans-serif", fontWeight: 800, fontSize: 20, color: COLORS.ink, marginBottom: 4 }}>SecureAdvisor</div>
+        <div style={{ fontSize: 12.5, color: COLORS.sub, marginBottom: 20 }}>{mode === "login" ? "Log in to sync your data across devices." : "Create an account to enable cloud sync."}</div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          <div>
+            <div style={{ fontSize: 11.5, color: COLORS.sub, marginBottom: 4, fontWeight: 600 }}>Email</div>
+            <input type="email" value={email} onChange={e => setEmail(e.target.value)} style={inputStyle} placeholder="you@example.com" />
+          </div>
+          <div>
+            <div style={{ fontSize: 11.5, color: COLORS.sub, marginBottom: 4, fontWeight: 600 }}>Password</div>
+            <input type="password" value={password} onChange={e => setPassword(e.target.value)} style={inputStyle} placeholder="••••••••" />
+          </div>
+          {error && <div style={{ fontSize: 12, color: COLORS.coral, fontWeight: 600 }}>{error}</div>}
+          {note && <div style={{ fontSize: 12, color: COLORS.tealDeep, fontWeight: 600 }}>{note}</div>}
+          <button onClick={submit} disabled={busy || !email || !password} style={{ ...primaryBtn, opacity: busy ? 0.6 : 1 }}>
+            {busy ? "Working…" : mode === "login" ? "Log in" : "Sign up"}
+          </button>
+          <div onClick={() => { setMode(mode === "login" ? "signup" : "login"); setError(""); setNote(""); }} style={{ fontSize: 12.5, color: COLORS.tealDeep, fontWeight: 600, textAlign: "center", cursor: "pointer" }}>
+            {mode === "login" ? "New here? Create an account" : "Already have an account? Log in"}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Root() {
+  const [session, setSession] = useState(undefined); // undefined = checking, null = logged out
+  useEffect(() => {
+    const sb = getSupabase();
+    if (!sb) { setSession(null); return; }
+    sb.auth.getSession().then(({ data }) => setSession(data.session || null));
+    const { data: sub } = sb.auth.onAuthStateChange((_event, sess) => setSession(sess));
+    return () => sub.subscription.unsubscribe();
+  }, []);
+  if (session === undefined) return null; // brief blank while checking existing session
+  if (!session) return <LoginView onSignedIn={() => {}} />;
+  return <App session={session} />;
+}
+
+function App({ session }) {
+  const [tab, setTab] = useState("dashboard");
+  const [sharePolicy, setSharePolicy] = useState(null);
+  const [data, setData] = useState(EMPTY_DATA);
+  const [navOpen, setNavOpen] = useState(false);
+  const [viewerDoc, setViewerDoc] = useState(null);
+  const [storageWarning, setStorageWarning] = useState("");
+
+  useEffect(() => {
+    (async () => {
+      try {
+        let obj = await storageGet(STORAGE_KEY);
+        if (!obj) {
+          // one-time migration: pull in data left over from the old IndexedDB-based version, if any
+          try {
+            const legacyIdb = await idbGet(STORAGE_KEY);
+            if (legacyIdb) obj = legacyIdb;
+          } catch (e) {}
+        }
+        if (!obj) {
+          // one-time migration from the even older localStorage-based version
+          const legacy = localStorage.getItem(STORAGE_KEY);
+          if (legacy) {
+            try {
+              obj = JSON.parse(legacy);
+              localStorage.removeItem(STORAGE_KEY);
+            } catch (e) {}
+          }
+        }
+        let merged = obj ? { ...EMPTY_DATA, ...obj } : { ...EMPTY_DATA };
+        merged.customers = (merged.customers || []).map(c => c.id ? c : { ...c, id: uid("CU") });
+
+        // pull from cloud and take whichever copy — local or cloud — was updated most recently
+        try {
+          const cloud = await cloudPull(session.user.id);
+          if (cloud && cloud.data) {
+            const localTime = merged.__updatedAt ? new Date(merged.__updatedAt).getTime() : 0;
+            const cloudTime = cloud.updatedAt ? new Date(cloud.updatedAt).getTime() : 0;
+            if (cloudTime > localTime) {
+              merged = { ...EMPTY_DATA, ...cloud.data };
+              merged.customers = (merged.customers || []).map(c => c.id ? c : { ...c, id: uid("CU") });
+            }
+          }
+        } catch (e) {}
+
+        setData(merged);
+        await storageSet(STORAGE_KEY, merged);
+      } catch (e) {}
+    })();
+  }, []);
+  useEffect(() => {
+    (async () => {
+      try {
+        const stamped = { ...data, __updatedAt: new Date().toISOString() };
+        await storageSet(STORAGE_KEY, stamped);
+        if (storageWarning) setStorageWarning("");
+      } catch (e) {
+        setStorageWarning("Couldn't save the last change — your device may be very low on storage. Try removing an old attachment or freeing up space.");
+      }
+      // best-effort cloud push, debounced — doesn't block the UI, silently skipped if offline
+      cloudPush(session.user.id, { ...data, __updatedAt: new Date().toISOString() }).catch(() => {});
+    })();
+  }, [data]);
+
+  useEffect(() => {
+    const onMessage = (e) => {
+      if (e.data && e.data.type === "agenex-quote-added" && e.data.quote) {
+        setData(d => d.quotes.some(x => x.id === e.data.quote.id) ? d : { ...d, quotes: [...d.quotes, e.data.quote] });
+      }
+    };
+    window.addEventListener("message", onMessage);
+    return () => window.removeEventListener("message", onMessage);
+  }, []);
+
+  useEffect(() => {
+    window.__openPdfViewer = (dataUrl) => setViewerDoc(dataUrl);
+    return () => { delete window.__openPdfViewer; };
+  }, []);
+
+  const view = useMemo(() => {
+    switch (tab) {
+      case "dashboard": return <DashboardView data={data} onShare={setSharePolicy} goTab={setTab} />;
+      case "policies": return <PoliciesView data={data} setData={setData} onShare={setSharePolicy} goTab={setTab} />;
+      case "quotation": return <QuotationView data={data} setData={setData} goTab={setTab} />;
+      case "calculator": return <CalculatorView />;
+      case "crm": return <CrmView data={data} setData={setData} />;
+      case "renewals": return <RenewalsView data={data} setData={setData} onShare={setSharePolicy} />;
+      case "claims": return <ClaimsView data={data} setData={setData} goTab={setTab} />;
+      case "tasks": return <TasksView data={data} setData={setData} />;
+      case "reports": return <ReportsView data={data} />;
+      case "agents": return <AgentsView data={data} setData={setData} />;
+      case "settings": return <SettingsView data={data} setData={setData} session={session} />;
+      default: return null;
+    }
+  }, [tab, data]);
+
+  const current = NAV.find(n => n.key === tab);
+
+  return (
+    <div style={{ fontFamily: "'Inter', sans-serif", background: COLORS.bg, minHeight: "100vh", color: COLORS.ink, paddingBottom: 70 }}>
+      <div style={{ background: COLORS.navyDeep, color: "#fff", padding: "14px 18px", display: "flex", alignItems: "center", justifyContent: "space-between", position: "sticky", top: 0, zIndex: 10 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <div style={{ width: 28, height: 28, borderRadius: 8, background: COLORS.navyDeep, display: "flex", alignItems: "center", justifyContent: "center" }}>
+            <svg width="18" height="18" viewBox="0 0 100 100">
+              <polygon points="50,18 75,27 75,50 50,80 25,50 25,27" fill={COLORS.teal} />
+              <polygon points="50,34 54,44 65,44 56,50 59,61 50,55 41,61 44,50 35,44 46,44" fill="white" />
+            </svg>
+          </div>
+          <div style={{ fontFamily: "'Sora', sans-serif", fontWeight: 700, fontSize: 15 }}>{current.emoji} {current.label}</div>
+        </div>
+        <div onClick={() => setNavOpen(true)} style={{ fontSize: 20, cursor: "pointer" }}>&#9776;</div>
+      </div>
+
+      {storageWarning && (
+        <div style={{ background: "#FBE7E1", color: "#B34328", fontSize: 12.5, padding: "10px 16px", display: "flex", justifyContent: "space-between", gap: 10 }}>
+          <span>{storageWarning}</span>
+          <span onClick={() => setStorageWarning("")} style={{ cursor: "pointer", fontWeight: 700 }}>&times;</span>
+        </div>
+      )}
+
+      <div style={{ padding: 16 }}>{view}</div>
+
+      {navOpen && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(11,23,48,0.5)", zIndex: 40 }} onClick={() => setNavOpen(false)}>
+          <div style={{ position: "absolute", top: 0, right: 0, width: 240, height: "100%", background: COLORS.navy, padding: "16px 10px" }} onClick={e => e.stopPropagation()}>
+            {NAV.map(n => (
+              <div key={n.key} onClick={() => { setTab(n.key); setNavOpen(false); }} style={{
+                display: "flex", alignItems: "center", gap: 10, padding: "12px 12px", borderRadius: 9, cursor: "pointer",
+                background: tab === n.key ? "rgba(255,255,255,0.1)" : "transparent", color: tab === n.key ? "#fff" : "#AAB4CB", fontSize: 14, fontWeight: tab === n.key ? 700 : 500,
+              }}>{n.emoji} {n.label}</div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <WhatsAppModal policy={sharePolicy} onClose={() => setSharePolicy(null)} />
+      {viewerDoc && <PdfViewerModal dataUrl={viewerDoc} onClose={() => setViewerDoc(null)} />}
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<Root />);
+</script>
+<script>
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => {
+      navigator.serviceWorker.register('service-worker.js').catch(() => {});
+    });
+  }
+</script>
+</body>
+</html>
